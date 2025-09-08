@@ -1,10 +1,12 @@
 #version 330 core
+in vec2 VUV;
 out vec4 FragColor;
 
+uniform sampler2D uScene;   // <-- scene color from pass 1
+
+// Music uniforms (optional; keep them if you’re already setting them)
 uniform float uTime;
 uniform vec2  uRes;
-
-// Music uniforms
 uniform float uBeatPhase;
 uniform float uBarPhase;
 uniform int   uState;     // MD_Calm..MD_Overdrive
@@ -20,10 +22,15 @@ vec3 stateColor(int s){
 }
 
 void main() {
-    vec2 uv = (gl_FragCoord.xy/uRes)*2.0-1.0;
-    uv.x *= uRes.x/uRes.y;
+    // 1) Always start from the scene
+    vec4 scene = texture(uScene, VUV);
 
-    float beatPulse = smoothstep(0.0,1.0, sin(6.28318*uBeatPhase)*0.5+0.5);
+    // 2) Compute visualizer overlay (ring etc.)
+    // Convert VUV into -1..1 and fix aspect
+    vec2 uv = VUV * 2.0 - 1.0;
+    uv.x *= (uRes.x / uRes.y);
+
+    float beatPulse = smoothstep(0.0, 1.0, sin(6.28318*uBeatPhase)*0.5+0.5);
     beatPulse = pow(beatPulse, 2.0);
 
     float drums = uLevelsA.x;
@@ -39,15 +46,15 @@ void main() {
     float radius = mix(0.45, 0.25, bass);
     float thick  = mix(0.015, 0.06, drums*beatPulse);
 
-    // Thin band ring
     float ring = smoothstep(radius - thick, radius, d) - smoothstep(radius, radius + thick, d);
-
     float dash = 0.5 + 0.5*sin(30.0*atan(uv.y, uv.x) + 10.0*uTime);
     float rim  = smoothstep(0.95, 0.97, 1.0 - d) * perc * dash;
     float shimmer = 0.1 * synth * (0.5 + 0.5*sin(8.0*uTime + 20.0*d));
     float glow = 0.4 * lead * exp(-10.0*abs(d - radius));
 
-    vec3 col = base + 0.9*ring + 0.6*rim + (shimmer + glow);
-    col = clamp(col, 0.0, 1.0);
-    FragColor = vec4(col, 1.0);
+    vec3 overlay = base*0.2 + 0.9*ring + 0.6*rim + (shimmer + glow);
+
+    // 3) Composite: add on top of scene (or mix with an alpha if you prefer)
+    vec3 outRGB = clamp(scene.rgb + overlay, 0.0, 1.0);
+    FragColor = vec4(outRGB, 1.0);
 }
