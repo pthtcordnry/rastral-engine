@@ -1,9 +1,12 @@
 #version 330 core
-layout(location=0) in vec2 POS;     // fullscreen quad position in NDC (-1..1)
-layout(location=1) in vec2 UVIN;    // 0..1
-out vec2 VUV;
+
+// Fullscreen quad with positions in clip-space [-1..1] and UVs [0..1]
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aUV;
+
+out vec2 vUV;
 
 void main() {
-    VUV = UVIN;
-    gl_Position = vec4(POS, 0.0, 1.0);
+    vUV = aUV;
+    gl_Position = vec4(aPos, 0.0, 1.0);
 }
