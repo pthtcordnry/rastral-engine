@@ -7,12 +7,14 @@
 #include <sstream>
 #include <chrono>
 #include <thread>
+#include <unordered_map>
 #include <GL/glew.h>
 #include <GL/wglew.h>
+#include <cfloat>
 
-#include "matrix_helper.h"
 #include "renderer.cpp"
 #include "opengl_renderer.cpp"
+#include "gltf_loader.cpp"
 #include "MusicDirector.cpp"
 #include "windows_input.cpp"
 
@@ -33,7 +35,6 @@ bool          g_vsyncOn = true;
 
 std::string gMeshShaderBase = "shaders/simple_uv";
 std::string gPostShaderBase = "shaders/visualizer";
-std::string gTexturePath = "textures/melty.png";
 
 RenderTarget gRT_Scene = {};
 GLuint gProgramMesh = 0;
@@ -43,6 +44,15 @@ GLuint gVAO_Mesh = 0, gVBO_Mesh = 0, gEBO_Mesh = 0;
 GLuint gVAO_Post = 0, gVBO_Post = 0;
 
 GLuint gTex_Albedo = 0;
+
+GLenum  gMeshIndexType = GL_UNSIGNED_INT; // we’ll use 32-bit indices
+Mat4    gModelPreXform = matIdentity();
+
+float gUserScale = 1.0f;
+float gCamDist = 5.0f;   // starting distance
+float gYaw = 0.0f;   // radians
+float gPitch = 0.0f;
+bool  gWireframe = false;
 
 float NowSecs(const HiResTimer& t) { 
     LARGE_INTEGER n; 
@@ -198,7 +208,10 @@ void UpdateWindowTitle() {
     }
 
     char title[256];
-    snprintf(title, sizeof(title), "Rastral Engine | state=%s rage=%.2f vsync=%s", StateName(md_get_state(&g_md)), g_rage, g_vsyncOn ? "on" : "off");
+    snprintf(title, sizeof(title),
+        "Rastral Engine | state=%s rage=%.2f vsync=%s | scale=%.3f dist=%.2f",
+        StateName(md_get_state(&g_md)), g_rage, g_vsyncOn ? "on" : "off",
+        gUserScale, gCamDist);
     SetWindowTextA(g_win.hwnd, title);
 }
 
@@ -252,40 +265,6 @@ void LoadShaders() {
     UpdateWindowTitle();
 }
 
-void CreateMeshCube() {
-    const float verts[] = {
-        -1,-1, 1,  0,0,   1,-1, 1,  1,0,   1, 1, 1,  1,1,  -1, 1, 1,  0,1,
-        -1,-1,-1, 1,0,  -1, 1,-1, 1,1,   1, 1,-1, 0,1,   1,-1,-1, 0,0,
-        -1,-1,-1, 0,0,  -1,-1, 1, 1,0,  -1, 1, 1, 1,1,  -1, 1,-1, 0,1,
-         1,-1,-1, 1,0,   1, 1,-1, 1,1,   1, 1, 1, 0,1,   1,-1, 1, 0,0,
-         -1, 1, 1, 0,1,   1, 1, 1, 1,1,   1, 1,-1, 1,0,  -1, 1,-1, 0,0,
-         -1,-1, 1, 0,0,  -1,-1,-1, 0,1,   1,-1,-1, 1,1,   1,-1, 1, 1,0
-    };
-    const unsigned short idx[] = {
-        0,1,2, 2,3,0,      4,5,6, 6,7,4,
-        8,9,10, 10,11,8,   12,13,14, 14,15,12,
-        16,17,18, 18,19,16, 20,21,22, 22,23,20
-    };
-
-    glGenVertexArrays(1, &gVAO_Mesh);
-    glBindVertexArray(gVAO_Mesh);
-
-    glGenBuffers(1, &gVBO_Mesh);
-    glBindBuffer(GL_ARRAY_BUFFER, gVBO_Mesh);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
-
-    glGenBuffers(1, &gEBO_Mesh);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gEBO_Mesh);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
-
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(0));
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-
-    glBindVertexArray(0);
-}
-
 void CreateFullscreenQuad() {
     const float fsq[] = {
         -1.f,-1.f, 0.f,0.f,   1.f,-1.f, 1.f,0.f,   1.f, 1.f, 1.f,1.f,
@@ -310,20 +289,31 @@ void InitGraphics(int width, int height) {
     SetViewportSize(width, height);
 
     LoadShaders();
-    CreateMeshCube();
+
+    if (!CreateMeshFromGLTF_PosUV_Textured("models/bot.glb", gVAO_Mesh, gVBO_Mesh, gEBO_Mesh, gModelPreXform))
+    {
+        MessageBoxA(nullptr, "Failed to load models/mixamo_tpose.glb", "glTF Load Error", MB_ICONERROR);
+    }
+
     CreateFullscreenQuad();
     CreateRenderTarget(gRT_Scene, g_view_w, g_view_h);
 
-    gTex_Albedo = LoadTextureRGBA8_FromFile(gTexturePath.c_str());
-    if (gTex_Albedo == 0) {
-        MessageBoxA(nullptr, "Texture load failed (textures/melty.png).", "Texture", MB_ICONWARNING);
+    if (!gTex_Albedo) {
+        unsigned char white[4] = { 255, 255, 255, 255 };
+        gTex_Albedo = CreateTexture2D(1, 1, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, white, GL_LINEAR, GL_LINEAR, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
     }
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-    glFrontFace(GL_CCW);
+    glDisable(GL_CULL_FACE);
+
+    gYaw = DegToRad(35.0f);
+    gPitch = DegToRad(20.0f);
+
+    // Compute camera distance to fit the whole model
+    float aspect = (float)g_view_w / (float)g_view_h;
+    float vfov = DegToRad(60.0f);
+    gCamDist = DistanceToFitSphere(gModelFitRadius, vfov, aspect);
 }
 
 void RenderFrame(float tSeconds, int viewW, int viewH) {
@@ -332,29 +322,48 @@ void RenderFrame(float tSeconds, int viewW, int viewH) {
     BeginRenderTarget(gRT_Scene);
      BeginFrame(0.05f, 0.06f, 0.08f, 1.0f);
 
-      float aspect = (float)g_view_w / (float)g_view_h;
-      Mat4 P = matPerspective(60.0f * 3.1415926f / 180.0f, aspect, 0.1f, 100.0f);
-      Mat4 V = matIdentity();                 // or your camera look-at if you have one
-      Mat4 PV = matMul(P, V);
-      Mat4 T = Mat4Translate(0.0f, 0.0f, -3.0f);
-      Mat4 R = matRotateY(tSeconds * 0.7f);
-      Mat4 M = matMul(T, R);
+     float aspect = (float)g_view_w / (float)g_view_h;
+     Mat4 P = matPerspective(60.0f * 3.1415926f / 180.0f, aspect, 0.1f, 100.0f);
 
-      // Push to UBOs
-      UpdatePerFrameUBO(PV.m);
+     // Orbit camera position from yaw/pitch/radius around target (0,0,0)
+     const float cp = std::cos(gPitch), sp = std::sin(gPitch);
+     const float cy = std::cos(gYaw), sy = std::sin(gYaw);
 
-      const float tint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-      UpdatePerDrawUBO(M.m, tint);
+     // Start at +Z looking toward origin (matches your old “translate -Z” view)
+     float eyeX = gCamDist * cp * sy;
+     float eyeY = gCamDist * sp;
+     float eyeZ = gCamDist * cp * cy;
 
-      BeginShader(gProgramMesh);
-      glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, gTex_Albedo);
+     Mat4 V = matLookAt(eyeX, eyeY, eyeZ, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
+     Mat4 PV = matMul(P, V);
 
-      glBindVertexArray(gVAO_Mesh);
-      glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_SHORT, 0);
-      glBindVertexArray(0);
+     // Model: pre-center/scale * user scale (no extra translate now; camera handles distance)
+     Mat4 SU = matScale(gUserScale, gUserScale, gUserScale);
+     Mat4 M = matMul(SU, gModelPreXform);
 
-      glBindTexture(GL_TEXTURE_2D, 0);
+     // Push to UBOs
+     UpdatePerFrameUBO(PV.m);
+     const float tint[4] = { 1,1,1,1 };
+     UpdatePerDrawUBO(M.m, tint);
+
+     // Draw all glTF primitives with their textures
+     BeginShader(gProgramMesh);
+     glActiveTexture(GL_TEXTURE0);
+     glBindVertexArray(gVAO_Mesh);
+
+     for (const auto& d : gGLTFDraws) {
+         // per-draw tint
+         UpdatePerDrawUBO(M.m, d.baseColor);
+
+         // bind texture if present, else fallback (still multiplied by baseColor)
+         glBindTexture(GL_TEXTURE_2D, d.texture ? d.texture : gTex_Albedo);
+
+         glDrawElements(GL_TRIANGLES, d.indexCount, GL_UNSIGNED_INT,
+             (void*)(size_t)(d.indexOffset * sizeof(uint32_t)));
+     }
+
+     glBindVertexArray(0);
+     glBindTexture(GL_TEXTURE_2D, 0);
      EndShader();
     EndRenderTarget();
 
@@ -384,6 +393,49 @@ void RenderFrame(float tSeconds, int viewW, int viewH) {
 
 void HandleInput() {
     const float step = 0.05f;
+    const float scaleStep = 1.10f;    // if you already added earlier, keep one copy
+    const float distStep = 0.25f;
+    const float yawStep = 0.02f;    // ~1.1°
+    const float pitchStep = 0.02f;
+
+    const float kPitchMin = -1.553343f; // -89° in radians
+    const float kPitchMax = +1.553343f; // +89°
+
+    // Orbit rotation (Arrow keys)
+    if (Input_IsDown(VK_LEFT)) { gYaw -= yawStep; }
+    if (Input_IsDown(VK_RIGHT)) { gYaw += yawStep; }
+    if (Input_IsDown(VK_UP)) { gPitch += pitchStep; if (gPitch > kPitchMax) gPitch = kPitchMax; }
+    if (Input_IsDown(VK_DOWN)) { gPitch -= pitchStep; if (gPitch < kPitchMin) gPitch = kPitchMin; }
+
+    // Distance (W/S) — keep if you added earlier
+    if (Input_IsPressed('W')) { gCamDist -= distStep; if (gCamDist < 0.2f) gCamDist = 0.2f; }
+    if (Input_IsPressed('S')) { gCamDist += distStep; }
+
+    // Scale (Z/X)
+    if (Input_IsPressed('Z')) { gUserScale = (gUserScale / scaleStep); if (gUserScale < 0.0001f) gUserScale = 0.0001f; }
+    if (Input_IsPressed('X')) { gUserScale = (gUserScale * scaleStep); if (gUserScale > 10000.0f) gUserScale = 10000.0f; }
+
+    if (Input_IsPressed(VK_SPACE)) {
+        float aspect = (float)g_view_w / (float)g_view_h;
+        float vfov = DegToRad(60.0f);
+        gCamDist = DistanceToFitSphere(gModelFitRadius, vfov, aspect);
+        // (optional) also reset yaw/pitch
+        // gYaw = DegToRad(35.0f); gPitch = DegToRad(-20.0f);
+    }
+
+    // Wireframe (F)
+    if (Input_IsPressed('F')) {
+        gWireframe = !gWireframe;
+        glPolygonMode(GL_FRONT_AND_BACK, gWireframe ? GL_LINE : GL_FILL);
+    }
+
+    // Reset (R)
+    if (Input_IsPressed('R')) {
+        gUserScale = 1.0f;
+        gCamDist = 3.0f;
+        gYaw = 0.0f;
+        gPitch = 0.0f;
+    }
 
     if (Input_IsPressed('1')) {
         md_set_state(&g_md, MD_Calm, true, 300.0f);

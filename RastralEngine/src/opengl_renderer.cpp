@@ -57,6 +57,9 @@ bool CreateRenderTarget(RenderTarget& rt, int w, int h) {
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, rt.w, rt.h);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rt.depth);
 
+    GLenum draw = GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1, &draw);
+
     GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     return status == GL_FRAMEBUFFER_COMPLETE;

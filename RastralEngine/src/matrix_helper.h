@@ -72,6 +72,14 @@ Mat4 matLookAt(float ex, float ey, float ez,
     return M;
 }
 
+Mat4 matRotateX(float a) {
+    Mat4 R = matIdentity();
+    float c = std::cos(a), s = std::sin(a);
+    R.m[5] = c;  R.m[9] = -s;
+    R.m[6] = s;  R.m[10] = c;
+    return R;
+}
+
 Mat4 matRotateY(float radians) {
     float c = std::cos(radians);
     float s = std::sin(radians);
@@ -81,6 +89,68 @@ Mat4 matRotateY(float radians) {
     M.m[2] = -s; 
     M.m[10] = c; 
     return M;
+}
+
+Mat4 matScale(float sx, float sy, float sz) {
+    Mat4 M = matIdentity();
+    M.m[0] = sx;
+    M.m[5] = sy;
+    M.m[10] = sz;
+    return M;
+}
+
+void normalize3(float& x, float& y, float& z) {
+    float len = std::sqrt(x * x + y * y + z * z);
+    if (len > 1e-6f) { x /= len; y /= len; z /= len; }
+}
+
+void cross3(float ax, float ay, float az,
+    float bx, float by, float bz,
+    float& rx, float& ry, float& rz) {
+    rx = ay * bz - az * by;
+    ry = az * bx - ax * bz;
+    rz = ax * by - ay * bx;
+}
+
+float dot3(float ax, float ay, float az,
+    float bx, float by, float bz) {
+    return ax * bx + ay * by + az * bz;
+}
+
+Mat4 matFromQuat(float x, float y, float z, float w) {
+    Mat4 R = matIdentity();
+    const float xx = x * x, yy = y * y, zz = z * z;
+    const float xy = x * y, xz = x * z, yz = y * z;
+    const float wx = w * x, wy = w * y, wz = w * z;
+    R.m[0] = 1 - 2 * (yy + zz); R.m[4] = 2 * (xy - wz);   R.m[8] = 2 * (xz + wy);
+    R.m[1] = 2 * (xy + wz);   R.m[5] = 1 - 2 * (xx + zz); R.m[9] = 2 * (yz - wx);
+    R.m[2] = 2 * (xz - wy);   R.m[6] = 2 * (yz + wx);   R.m[10] = 1 - 2 * (xx + yy);
+    return R;
+}
+
+Mat4 matTRS(float tx, float ty, float tz, float qx, float qy, float qz, float qw, float sx, float sy, float sz) {
+    return matMul(Mat4Translate(tx, ty, tz), matMul(matFromQuat(qx, qy, qz, qw), matScale(sx, sy, sz)));
+}
+
+void xformPoint(const Mat4& M, float x, float y, float z, float& ox, float& oy, float& oz) {
+    ox = M.m[0] * x + M.m[4] * y + M.m[8] * z + M.m[12];
+    oy = M.m[1] * x + M.m[5] * y + M.m[9] * z + M.m[13];
+    oz = M.m[2] * x + M.m[6] * y + M.m[10] * z + M.m[14];
+}
+
+static inline float DegToRad(float d) { return d * 3.1415926535f / 180.0f; }
+
+// Given bounding-sphere radius r, vertical FOV, and aspect, return distance that fits both width & height
+static float DistanceToFitSphere(float r, float vfovRad, float aspect)
+{
+    // vertical constraint
+    float dV = r / std::tan(vfovRad * 0.5f);
+    // horizontal constraint: hfov from vfov & aspect
+    float hfov = 2.0f * std::atan(std::tan(vfovRad * 0.5f) * aspect);
+    float dH = r / std::tan(hfov * 0.5f);
+    // a little padding so it doesn't kiss the edges
+    float d = std::max(dV, dH);
+    return d * 1.15f; // 15% margin
 }
 
 #endif // MATRIX_HELPER_H

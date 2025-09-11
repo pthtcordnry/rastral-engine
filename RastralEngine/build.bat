@@ -12,6 +12,7 @@ set "OUTEXE=MusicDirector.exe"
 set "ROOT=%~dp0"
 set "SRC=%ROOT%src"
 set "MAIN=%SRC%\Main.cpp"
+set INC=/I "%ROOT%Include"
 
 set "CFG=%~1"
 if /I "%CFG%"=="" set "CFG=debug"
@@ -57,10 +58,12 @@ if "%USE_GLEW_STATIC%"=="1" (
   set "CFLAGS=%CFLAGS% /DGLEW_STATIC"
 )
 
+set "CFLAGS=%CFLAGS% %INC%"
+
 echo.
 echo === Building %CFG% ===
 echo   cl %CFLAGS% ^
- /I"%GLEW_INC%" /IInclude ^
+ /I"%GLEW_INC%"  ^
  /Fe:"%OUTDIR%\%OUTEXE%" /Fo"%OUTDIR%\\" ^
  "%MAIN%" ^
  %LFLAGS% /LIBPATH:"%GLEW_LIB%" %GLEW_LIBNAME% opengl32.lib gdi32.lib user32.lib
