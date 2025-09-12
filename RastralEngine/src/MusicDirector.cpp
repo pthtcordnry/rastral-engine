@@ -1,64 +1,6 @@
-﻿#include <unordered_map>
-#include <string>
-#include <vector>
+﻿#include <vector>
 #include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include "MiniAudioEngine.cpp"
-
-enum MD_State { MD_Calm, MD_Tense, MD_Combat, MD_Overdrive };
-
-const char* StateName(MD_State s) {
-    switch (s) {
-    case MD_Calm:      return "Calm";
-    case MD_Tense:     return "Tense";
-    case MD_Combat:    return "Combat";
-    case MD_Overdrive: return "Overdrive";
-    default:           return "?";
-    }
-}
-
-struct MD_StemDesc {
-    std::string  name;
-    std::string  filepath;
-    bool startActive = false;
-    audio_route    route = MAE_ThroughLPF;
-};
-
-struct MD_Settings {
-    float bpm = 120.f;
-    int timeSigNumerator = 4;
-    int timeSigDenominator = 4;
-    float initialStartDelaySec = 0.10f;
-};
-
-struct MD_Stem {
-    float currentVol;
-    float startVol;
-    float targetVol;
-    double fadeTime;
-    double fadeDur;
-    std::string name;
-    MD_Stem() : currentVol(0.f), startVol(0.f), targetVol(0.f), fadeTime(0.0), fadeDur(0.0) {}
-};
-
-struct MusicDirector {
-    audio_engine* eng;
-    MD_Settings cfg;
-    std::unordered_map<std::string, MD_Stem> stems;
-
-    bool      running;
-    MD_State  state;
-    float     rage;
-
-    float     targetPitch;
-    float     currentPitch;
-
-    MusicDirector()
-        : eng(NULL), running(false), state(MD_Calm), rage(0.f),
-        targetPitch(1.f), currentPitch(1.f) {
-    }
-};
+#include "music_director.h"
 
 float md_clamp01(float x) {
     return (x < 0.f) ? 0.f : ((x > 1.f) ? 1.f : x);
@@ -361,7 +303,7 @@ void md_set_stem_target_volume(MusicDirector* director, const std::string& name,
     st->fadeTime = (delaySec > 0.0) ? -delaySec : 0.0;
 }
 
-float md_get_bpm(const MusicDirector* director) { return director ? director->cfg.bpm : 0.f; }
+float md_get_bpm(const MusicDirector* director)      { return director ? director->cfg.bpm : 0.f; }
 void  md_set_bpm(MusicDirector* director, float bpm) { if (director) director->cfg.bpm = bpm; }
 MD_State md_get_state(const MusicDirector* director) { return director ? director->state : MD_Calm; }
 

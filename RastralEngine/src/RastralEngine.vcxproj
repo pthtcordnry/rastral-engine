@@ -123,17 +123,21 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="engine_data.cpp" />
     <ClCompile Include="Main.cpp" />
+    <ClCompile Include="memory_arena.cpp" />
     <ClCompile Include="MiniAudioEngine.cpp" />
     <ClCompile Include="gltf_loader.cpp" />
     <ClCompile Include="MusicDirector.cpp" />
     <ClCompile Include="opengl_renderer.cpp" />
-    <ClCompile Include="renderer.cpp" />
+    <ClCompile Include="renderer.h" />
     <ClCompile Include="windows_input.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Include\miniaudio.h" />
-    <ClInclude Include="matrix_helper.h" />
+    <ClInclude Include="math_helper.h" />
+    <ClInclude Include="miniaudio_engine.h" />
+    <ClInclude Include="music_director.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -1,13 +1,12 @@
-#pragma once
-#ifndef MATRIX_HELPER_H
-#define MATRIX_HELPER_H
+#ifndef MATH_HELPER_H
+#define MATH_HELPER_H
 
 #include <cmath>
 
 struct Mat4 { float m[16]; };
 
 Mat4 matIdentity() {
-    Mat4 r; 
+    Mat4 r{};
     for (int i = 0; i < 16; i++) {
         r.m[i] = 0.0f;
         r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1.0f;
@@ -26,7 +25,7 @@ Mat4 matMul(const Mat4& A, const Mat4& B) {
 }
 
 Mat4 matPerspective(float fovyRad, float aspect, float zNear, float zFar) {
-    Mat4 M{};                    // all zeros
+    Mat4 M{};
     const float f = 1.0f / std::tan(0.5f * fovyRad);
     M.m[0] = f / aspect;
     M.m[5] = f;
@@ -99,24 +98,6 @@ Mat4 matScale(float sx, float sy, float sz) {
     return M;
 }
 
-void normalize3(float& x, float& y, float& z) {
-    float len = std::sqrt(x * x + y * y + z * z);
-    if (len > 1e-6f) { x /= len; y /= len; z /= len; }
-}
-
-void cross3(float ax, float ay, float az,
-    float bx, float by, float bz,
-    float& rx, float& ry, float& rz) {
-    rx = ay * bz - az * by;
-    ry = az * bx - ax * bz;
-    rz = ax * by - ay * bx;
-}
-
-float dot3(float ax, float ay, float az,
-    float bx, float by, float bz) {
-    return ax * bx + ay * by + az * bz;
-}
-
 Mat4 matFromQuat(float x, float y, float z, float w) {
     Mat4 R = matIdentity();
     const float xx = x * x, yy = y * y, zz = z * z;
@@ -138,19 +119,33 @@ void xformPoint(const Mat4& M, float x, float y, float z, float& ox, float& oy, 
     oz = M.m[2] * x + M.m[6] * y + M.m[10] * z + M.m[14];
 }
 
-static inline float DegToRad(float d) { return d * 3.1415926535f / 180.0f; }
+void normalize3(float& x, float& y, float& z) {
+    float len = std::sqrt(x * x + y * y + z * z);
+    if (len > 1e-6f) { x /= len; y /= len; z /= len; }
+}
 
-// Given bounding-sphere radius r, vertical FOV, and aspect, return distance that fits both width & height
-static float DistanceToFitSphere(float r, float vfovRad, float aspect)
+void cross3(float ax, float ay, float az,
+    float bx, float by, float bz,
+    float& rx, float& ry, float& rz) {
+    rx = ay * bz - az * by;
+    ry = az * bx - ax * bz;
+    rz = ax * by - ay * bx;
+}
+
+float dot3(float ax, float ay, float az,
+    float bx, float by, float bz) {
+    return ax * bx + ay * by + az * bz;
+}
+
+float DegToRad(float d) { return d * 3.1415926535f / 180.0f; }
+
+float DistanceToFitSphere(float r, float vfovRad, float aspect)
 {
-    // vertical constraint
     float dV = r / std::tan(vfovRad * 0.5f);
-    // horizontal constraint: hfov from vfov & aspect
     float hfov = 2.0f * std::atan(std::tan(vfovRad * 0.5f) * aspect);
     float dH = r / std::tan(hfov * 0.5f);
-    // a little padding so it doesn't kiss the edges
     float d = std::max(dV, dH);
-    return d * 1.15f; // 15% margin
+    return d * 1.15f;
 }
 
 #endif // MATRIX_HELPER_H

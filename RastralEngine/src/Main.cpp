@@ -12,47 +12,46 @@
 #include <GL/wglew.h>
 #include <cfloat>
 
-#include "renderer.cpp"
+#include "renderer.h"
 #include "opengl_renderer.cpp"
 #include "gltf_loader.cpp"
 #include "MusicDirector.cpp"
 #include "windows_input.cpp"
+#include "engine_data.cpp"
+#include "memory_arena.cpp"
 
-// ---------------- Window / GL boilerplate ----------------
-struct Win32Window { HINSTANCE hinst; HWND hwnd; HDC hdc; int width; int height; bool running; };
-struct GLContext { HGLRC rc; bool core; };
-struct HiResTimer { LARGE_INTEGER f; LARGE_INTEGER t0; };
+struct Win32Window { 
+    HINSTANCE hinst; 
+    HWND hwnd; 
+    HDC hdc; 
+    int width; 
+    int height; 
+    bool running; 
+};
+
+struct GLContext { 
+    HGLRC rc; 
+    bool core; 
+};
+
+struct HiResTimer {
+    LARGE_INTEGER f; 
+    LARGE_INTEGER t0;
+};
 
 Win32Window g_win = {};
 GLContext   g_gl = {};
 HiResTimer  g_tim = {};
 
-audio_engine  g_audio = {};
-MusicDirector g_md = {};
-bool          g_audioReady = false;
-float         g_rage = 0.0f;
-bool          g_vsyncOn = true;
+EngineData* engineData;
+RenderState* renderState; 
 
 std::string gMeshShaderBase = "shaders/simple_uv";
 std::string gPostShaderBase = "shaders/visualizer";
 
-RenderTarget gRT_Scene = {};
-GLuint gProgramMesh = 0;
-GLuint gProgramPost = 0;
-
-GLuint gVAO_Mesh = 0, gVBO_Mesh = 0, gEBO_Mesh = 0;
-GLuint gVAO_Post = 0, gVBO_Post = 0;
-
 GLuint gTex_Albedo = 0;
-
-GLenum  gMeshIndexType = GL_UNSIGNED_INT; // we’ll use 32-bit indices
-Mat4    gModelPreXform = matIdentity();
-
-float gUserScale = 1.0f;
-float gCamDist = 5.0f;   // starting distance
-float gYaw = 0.0f;   // radians
-float gPitch = 0.0f;
-bool  gWireframe = false;
+GLenum gMeshIndexType = GL_UNSIGNED_INT;
+Mat4 gModelPreXform = matIdentity();
 
 float NowSecs(const HiResTimer& t) { 
     LARGE_INTEGER n; 
@@ -60,7 +59,7 @@ float NowSecs(const HiResTimer& t) {
     return float(double(n.QuadPart - t.t0.QuadPart) / double(t.f.QuadPart)); 
 }
 
-void  TimerStart(HiResTimer& t) { 
+void TimerStart(HiResTimer& t) { 
     QueryPerformanceFrequency(&t.f); 
     QueryPerformanceCounter(&t.t0); 
 }
@@ -156,46 +155,6 @@ bool PumpMessages(Win32Window& w) {
     return w.running;
 }
 
-bool InitAudio() {
-    audio_config engCfg = { 0,0,18000.0,4 };
-    if (!ae_init(&g_audio, &engCfg)) {
-        return false;
-    }
-
-    MD_Settings s{}; 
-    s.bpm = 110.f; 
-    s.initialStartDelaySec = 0.15f; 
-    md_init(&g_md, &g_audio, &s);
-    std::vector<MD_StemDesc> stems = {
-        {"drums","audio/drums.flac",true,MAE_ThroughLPF},
-        {"bass","audio/bass.flac",false,MAE_ThroughLPF},
-        {"percussion","audio/percussion.flac",false,MAE_ThroughLPF},
-        {"synth","audio/synth.flac",false,MAE_ThroughLPF},
-        {"lead","audio/synth_lead.flac",false,MAE_ThroughLPF},
-    };
-
-    if (!md_load_stems(&g_md, stems)) {
-        return false;
-    }
-
-    if (!md_start_all_synced_looping(&g_md)) {
-        return false;
-    }
-
-    md_set_state(&g_md, MD_Calm, false, 0.0f);
-    g_audioReady = true;
-    return true;
-}
-
-void ShutdownAudio() { 
-    if (!g_audioReady) {
-        return;
-    }
-    md_shutdown(&g_md); 
-    ae_shutdown(&g_audio); 
-    g_audioReady = false; 
-}
-
 void SetSwapInterval(int interval) { 
     if (wglSwapIntervalEXT) {
         wglSwapIntervalEXT(interval);
@@ -210,8 +169,8 @@ void UpdateWindowTitle() {
     char title[256];
     snprintf(title, sizeof(title),
         "Rastral Engine | state=%s rage=%.2f vsync=%s | scale=%.3f dist=%.2f",
-        StateName(md_get_state(&g_md)), g_rage, g_vsyncOn ? "on" : "off",
-        gUserScale, gCamDist);
+        StateName(md_get_state(&engineData->g_md)), engineData->g_rage, engineData->g_vsyncOn ? "on" : "off",
+        renderState->gUserScale, renderState->gCamDist);
     SetWindowTextA(g_win.hwnd, title);
 }
 
@@ -220,83 +179,100 @@ std::string ReadTextFile(const std::string& path) {
     std::ostringstream ss; ss << f.rdbuf(); return ss.str();
 }
 
-GLuint LoadProgramFromFiles(const std::string& vsPath, const std::string& fsPath) {
-    std::string vsSrc = ReadTextFile(vsPath), fsSrc = ReadTextFile(fsPath);
-    if (vsSrc.empty() || fsSrc.empty()) {
-        std::string msg = "Missing shader: " + vsPath + " or " + fsPath;
-        MessageBoxA(nullptr, msg.c_str(), "Shader Load Error", MB_ICONERROR);
+void LoadShaders_FromFiles() {
+    const std::string vsMesh = ReadTextFile(gMeshShaderBase + ".vert");
+    const std::string fsMesh = ReadTextFile(gMeshShaderBase + ".frag");
+    const std::string vsPost = ReadTextFile(gPostShaderBase + ".vert");
+    const std::string fsPost = ReadTextFile(gPostShaderBase + ".frag");
+    if (vsMesh.empty() || fsMesh.empty() || vsPost.empty() || fsPost.empty()) {
+        MessageBoxA(nullptr, "Missing shader source files.", "Shader Error", MB_ICONERROR);
         ExitProcess(1);
     }
-    GLuint vs = CompileShader(GL_VERTEX_SHADER, vsSrc.c_str());
-    GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fsSrc.c_str());
-    GLuint p = LinkProgram(vs, fs);
-    glDeleteShader(vs); glDeleteShader(fs);
-    return p;
-}
 
-void LoadShaders() {
-    if (gProgramMesh) { 
-        glDeleteProgram(gProgramMesh); 
-        gProgramMesh = 0; 
+    DestroyProgram(renderState->gProgramMesh);
+    DestroyProgram(renderState->gProgramPost);
+
+    renderState->gProgramMesh = CreateProgramFromSources(vsMesh.c_str(), fsMesh.c_str());
+    renderState->gProgramPost = CreateProgramFromSources(vsPost.c_str(), fsPost.c_str());
+    if (!renderState->gProgramMesh || !renderState->gProgramPost) {
+        MessageBoxA(nullptr, "Shader compile/link failed.", "Shader Error", MB_ICONERROR);
+        ExitProcess(1);
     }
 
-    if (gProgramPost) { 
-        glDeleteProgram(gProgramPost); 
-        gProgramPost = 0; 
-    }
-
-    gProgramMesh = LoadProgramFromFiles(gMeshShaderBase + ".vert", gMeshShaderBase + ".frag");
-    gProgramPost = LoadProgramFromFiles(gPostShaderBase + ".vert", gPostShaderBase + ".frag");
-
-    glUseProgram(gProgramMesh);
-    glUniform1i(glGetUniformLocation(gProgramMesh, "uTex"), 0);
-    BindUBOsForMesh(gProgramMesh);
-    glUseProgram(0);
-
-    glUseProgram(gProgramPost);
-    glUniform1i(glGetUniformLocation(gProgramPost, "uScene"), 0);
-    BindUBOsForVisualizer(gProgramPost);
-    glUseProgram(0);
-
-    // Create UBOs once
-    CreateUBOs();
-    BindUBOsForMesh(gProgramMesh);
-    BindUBOsForVisualizer(gProgramPost);
-    UpdateWindowTitle();
+    InitMeshProgram(renderState->gProgramMesh);
+    InitPostProgram(renderState->gProgramPost);
 }
 
-void CreateFullscreenQuad() {
-    const float fsq[] = {
-        -1.f,-1.f, 0.f,0.f,   1.f,-1.f, 1.f,0.f,   1.f, 1.f, 1.f,1.f,
-        -1.f,-1.f, 0.f,0.f,   1.f, 1.f, 1.f,1.f,  -1.f, 1.f, 0.f,1.f
+void InitData() {
+    arena_init(&engineMemArena, GAME_ARENA_SIZE);
+
+    void* p1 = arena_alloc(&engineMemArena, sizeof(EngineData));
+    void* p2 = arena_alloc(&engineMemArena, sizeof(RenderState));
+
+    engineData = new (p1) EngineData();
+    renderState = new (p2) RenderState();
+}
+
+bool InitAudio() {
+    audio_config engCfg = { 0,0,18000.0,4 };
+
+    if (!ae_init(&engineData->g_audio, &engCfg)) {
+        MessageBoxA(nullptr, "Audio init failed to initialize.", "Error", MB_ICONERROR);
+        return false;
+    }
+
+    MD_Settings s{};
+    s.bpm = 110.f;
+    s.initialStartDelaySec = 0.15f;
+    if (!md_init(&engineData->g_md, &engineData->g_audio, &s)) {
+        MessageBoxA(nullptr, "Audio init failed to initialzed MusicDirector.", "Program Load Step", MB_ICONINFORMATION);
+    }
+
+    std::vector<MD_StemDesc> stems = {
+        {"drums","audio/drums.flac",true,MAE_ThroughLPF},
+        {"bass","audio/bass.flac",false,MAE_ThroughLPF},
+        {"percussion","audio/percussion.flac",false,MAE_ThroughLPF},
+        {"synth","audio/synth.flac",false,MAE_ThroughLPF},
+        {"lead","audio/synth_lead.flac",false,MAE_ThroughLPF},
     };
-    glGenVertexArrays(1, &gVAO_Post);
-    glBindVertexArray(gVAO_Post);
 
-    glGenBuffers(1, &gVBO_Post);
-    glBindBuffer(GL_ARRAY_BUFFER, gVBO_Post);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(fsq), fsq, GL_STATIC_DRAW);
+    if (!md_load_stems(&engineData->g_md, stems)) {
+        MessageBoxA(nullptr, "Audio init failed to load stems.", "Error", MB_ICONERROR);
+        return false;
+    }
 
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-    glEnableVertexAttribArray(1);
+    if (!md_start_all_synced_looping(&engineData->g_md)) {
+        MessageBoxA(nullptr, "Audio init failed to start loop.", "Error", MB_ICONERROR);
+        return false;
+    }
 
-    glBindVertexArray(0);
+    md_set_state(&engineData->g_md, MD_Calm, false, 0.0f);
+    engineData->g_audioReady = true;
+    return true;
+}
+
+void ShutdownAudio() {
+    if (!engineData->g_audioReady) {
+        return;
+    }
+    md_shutdown(&engineData->g_md);
+    ae_shutdown(engineData->g_md.eng);
+    engineData->g_audioReady = false;
 }
 
 void InitGraphics(int width, int height) {
     SetViewportSize(width, height);
 
-    LoadShaders();
+    LoadShaders_FromFiles();
 
-    if (!CreateMeshFromGLTF_PosUV_Textured("models/bot.glb", gVAO_Mesh, gVBO_Mesh, gEBO_Mesh, gModelPreXform))
+    if (!CreateMeshFromGLTF_PosUV_Textured("models/bot.glb", renderState->gVAO_Mesh, renderState->gVBO_Mesh, renderState->gEBO_Mesh, gModelPreXform))
     {
         MessageBoxA(nullptr, "Failed to load models/mixamo_tpose.glb", "glTF Load Error", MB_ICONERROR);
     }
 
-    CreateFullscreenQuad();
-    CreateRenderTarget(gRT_Scene, g_view_w, g_view_h);
+    CreateFullscreenQuad(&renderState->gVAO_Post, &renderState->gVBO_Post);
+    CreateRenderTarget(renderState->gRT_Scene, g_view_w, g_view_h);
+    CreateUBOs();
 
     if (!gTex_Albedo) {
         unsigned char white[4] = { 255, 255, 255, 255 };
@@ -307,166 +283,175 @@ void InitGraphics(int width, int height) {
     glDepthFunc(GL_LESS);
     glDisable(GL_CULL_FACE);
 
-    gYaw = DegToRad(35.0f);
-    gPitch = DegToRad(20.0f);
+    renderState->gYaw = DegToRad(35.0f);
+    renderState->gPitch = DegToRad(20.0f);
 
-    // Compute camera distance to fit the whole model
     float aspect = (float)g_view_w / (float)g_view_h;
     float vfov = DegToRad(60.0f);
-    gCamDist = DistanceToFitSphere(gModelFitRadius, vfov, aspect);
+    renderState->gCamDist = DistanceToFitSphere(gModelFitRadius, vfov, aspect);
 }
 
 void RenderFrame(float tSeconds, int viewW, int viewH) {
     SetViewportSize(viewW, viewH);
 
-    BeginRenderTarget(gRT_Scene);
+    BeginRenderTarget(renderState->gRT_Scene);
      BeginFrame(0.05f, 0.06f, 0.08f, 1.0f);
 
      float aspect = (float)g_view_w / (float)g_view_h;
      Mat4 P = matPerspective(60.0f * 3.1415926f / 180.0f, aspect, 0.1f, 100.0f);
 
-     // Orbit camera position from yaw/pitch/radius around target (0,0,0)
-     const float cp = std::cos(gPitch), sp = std::sin(gPitch);
-     const float cy = std::cos(gYaw), sy = std::sin(gYaw);
+     const float cp = std::cos(renderState->gPitch), sp = std::sin(renderState->gPitch);
+     const float cy = std::cos(renderState->gYaw), sy = std::sin(renderState->gYaw);
 
-     // Start at +Z looking toward origin (matches your old “translate -Z” view)
-     float eyeX = gCamDist * cp * sy;
-     float eyeY = gCamDist * sp;
-     float eyeZ = gCamDist * cp * cy;
+     float eyeX = renderState->gCamDist * cp * sy;
+     float eyeY = renderState->gCamDist * sp;
+     float eyeZ = renderState->gCamDist * cp * cy;
 
      Mat4 V = matLookAt(eyeX, eyeY, eyeZ, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
      Mat4 PV = matMul(P, V);
 
-     // Model: pre-center/scale * user scale (no extra translate now; camera handles distance)
-     Mat4 SU = matScale(gUserScale, gUserScale, gUserScale);
+     Mat4 SU = matScale(renderState->gUserScale, renderState->gUserScale, renderState->gUserScale);
      Mat4 M = matMul(SU, gModelPreXform);
 
-     // Push to UBOs
      UpdatePerFrameUBO(PV.m);
-     const float tint[4] = { 1,1,1,1 };
-     UpdatePerDrawUBO(M.m, tint);
 
-     // Draw all glTF primitives with their textures
-     BeginShader(gProgramMesh);
-     glActiveTexture(GL_TEXTURE0);
-     glBindVertexArray(gVAO_Mesh);
-
-     for (const auto& d : gGLTFDraws) {
-         // per-draw tint
-         UpdatePerDrawUBO(M.m, d.baseColor);
-
-         // bind texture if present, else fallback (still multiplied by baseColor)
-         glBindTexture(GL_TEXTURE_2D, d.texture ? d.texture : gTex_Albedo);
-
-         glDrawElements(GL_TRIANGLES, d.indexCount, GL_UNSIGNED_INT,
-             (void*)(size_t)(d.indexOffset * sizeof(uint32_t)));
-     }
-
-     glBindVertexArray(0);
-     glBindTexture(GL_TEXTURE_2D, 0);
+     BeginShader(renderState->gProgramMesh);
+      BindVAO(renderState->gVAO_Mesh);
+      
+      for (const auto& d : gGLTFDraws) {
+          UpdatePerDrawUBO(M.m, d.baseColor);
+          BindTexture2D(0, d.texture ? d.texture : gTex_Albedo);
+      
+          DrawIndexedTriangles(d.indexCount, (void *)(d.indexOffset * sizeof(uint32_t)));
+      }
+      
+      BindVAO(0);
+      BindTexture2D(0, 0);
      EndShader();
     EndRenderTarget();
 
-    float beatPhase = 0.0f, barPhase = 0.0f; md_music_clock(&g_md, &beatPhase, &barPhase);
-    float vDrums = md_get_stem_current_volume(&g_md, "drums");
-    float vBass = md_get_stem_current_volume(&g_md, "bass");
-    float vPerc = md_get_stem_current_volume(&g_md, "percussion");
-    float vSynth = md_get_stem_current_volume(&g_md, "synth");
-    float vLead = md_get_stem_current_volume(&g_md, "lead");
-    int   stateI = (int)md_get_state(&g_md);
+    float beatPhase = 0.0f, barPhase = 0.0f; md_music_clock(&engineData->g_md, &beatPhase, &barPhase);
+    float vDrums = md_get_stem_current_volume(&engineData->g_md, "drums");
+    float vBass = md_get_stem_current_volume(&engineData->g_md, "bass");
+    float vPerc = md_get_stem_current_volume(&engineData->g_md, "percussion");
+    float vSynth = md_get_stem_current_volume(&engineData->g_md, "synth");
+    float vLead = md_get_stem_current_volume(&engineData->g_md, "lead");
+    int   stateI = (int)md_get_state(&engineData->g_md);
 
     BeginFrame(0, 0, 0, 1);
-     BeginShader(gProgramPost);
-      UpdateVizParamsUBO((float)g_view_w, (float)g_view_h, tSeconds, beatPhase, barPhase, stateI, g_rage, vDrums, vBass, vPerc, vSynth, vLead);
-     
-      glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, gRT_Scene.color);
-     
-      glBindVertexArray(gVAO_Post);
-      glDrawArrays(GL_TRIANGLES, 0, 6);
-      glBindVertexArray(0);
-     
-      glBindTexture(GL_TEXTURE_2D, 0);
+     BeginShader(renderState->gProgramPost);
+      UpdateVizParamsUBO((float)g_view_w, (float)g_view_h, tSeconds, beatPhase, barPhase, stateI, engineData->g_rage, vDrums, vBass, vPerc, vSynth, vLead);
+      BindTexture2D(0, renderState->gRT_Scene.color);
+      BindVAO(renderState->gVAO_Post);
+      DrawTriangles(0, 6);
+      BindVAO(0);
+      BindTexture2D(0, 0);
      EndShader();
     EndFrame();
 }
 
 void HandleInput() {
     const float step = 0.05f;
-    const float scaleStep = 1.10f;    // if you already added earlier, keep one copy
+    const float scaleStep = 1.10f;
     const float distStep = 0.25f;
-    const float yawStep = 0.02f;    // ~1.1°
+    const float yawStep = 0.02f;
     const float pitchStep = 0.02f;
 
-    const float kPitchMin = -1.553343f; // -89° in radians
-    const float kPitchMax = +1.553343f; // +89°
+    const float kPitchMin = -1.553343f;
+    const float kPitchMax = +1.553343f;
 
-    // Orbit rotation (Arrow keys)
-    if (Input_IsDown(VK_LEFT)) { gYaw -= yawStep; }
-    if (Input_IsDown(VK_RIGHT)) { gYaw += yawStep; }
-    if (Input_IsDown(VK_UP)) { gPitch += pitchStep; if (gPitch > kPitchMax) gPitch = kPitchMax; }
-    if (Input_IsDown(VK_DOWN)) { gPitch -= pitchStep; if (gPitch < kPitchMin) gPitch = kPitchMin; }
+    if (Input_IsDown(VK_LEFT)) { 
+        renderState->gYaw -= yawStep; 
+    }
 
-    // Distance (W/S) — keep if you added earlier
-    if (Input_IsPressed('W')) { gCamDist -= distStep; if (gCamDist < 0.2f) gCamDist = 0.2f; }
-    if (Input_IsPressed('S')) { gCamDist += distStep; }
+    if (Input_IsDown(VK_RIGHT)) { 
+        renderState->gYaw += yawStep; 
+    }
 
-    // Scale (Z/X)
-    if (Input_IsPressed('Z')) { gUserScale = (gUserScale / scaleStep); if (gUserScale < 0.0001f) gUserScale = 0.0001f; }
-    if (Input_IsPressed('X')) { gUserScale = (gUserScale * scaleStep); if (gUserScale > 10000.0f) gUserScale = 10000.0f; }
+    if (Input_IsDown(VK_UP)) { 
+        renderState->gPitch += pitchStep; 
+        if (renderState->gPitch > kPitchMax) {
+            renderState->gPitch = kPitchMax;
+        }
+    }
+
+    if (Input_IsDown(VK_DOWN)) { 
+        renderState->gPitch -= pitchStep; 
+        if (renderState->gPitch < kPitchMin) {
+            renderState->gPitch = kPitchMin;
+        }
+    }
+
+    if (Input_IsPressed('W')) { 
+        renderState->gCamDist -= distStep; 
+        if (renderState->gCamDist < 0.2f) {
+            renderState->gCamDist = 0.2f;
+        }
+    }
+
+    if (Input_IsPressed('S')) { 
+        renderState->gCamDist += distStep; 
+    }
+
+    if (Input_IsPressed('Z')) { 
+        renderState->gUserScale = (renderState->gUserScale / scaleStep); 
+        if (renderState->gUserScale < 0.0001f) {
+            renderState->gUserScale = 0.0001f;
+        }
+    }
+
+    if (Input_IsPressed('X')) { 
+        renderState->gUserScale = (renderState->gUserScale * scaleStep); 
+        if (renderState->gUserScale > 10000.0f) {
+            renderState->gUserScale = 10000.0f;
+        }
+    }
 
     if (Input_IsPressed(VK_SPACE)) {
         float aspect = (float)g_view_w / (float)g_view_h;
         float vfov = DegToRad(60.0f);
-        gCamDist = DistanceToFitSphere(gModelFitRadius, vfov, aspect);
-        // (optional) also reset yaw/pitch
-        // gYaw = DegToRad(35.0f); gPitch = DegToRad(-20.0f);
+        renderState->gCamDist = DistanceToFitSphere(gModelFitRadius, vfov, aspect);
+        renderState->gYaw = DegToRad(35.0f);
+        renderState->gPitch = DegToRad(-20.0f);
     }
 
-    // Wireframe (F)
-    if (Input_IsPressed('F')) {
-        gWireframe = !gWireframe;
-        glPolygonMode(GL_FRONT_AND_BACK, gWireframe ? GL_LINE : GL_FILL);
-    }
-
-    // Reset (R)
     if (Input_IsPressed('R')) {
-        gUserScale = 1.0f;
-        gCamDist = 3.0f;
-        gYaw = 0.0f;
-        gPitch = 0.0f;
+        renderState->gUserScale = 1.0f;
+        renderState->gCamDist = 3.0f;
+        renderState->gYaw = 0.0f;
+        renderState->gPitch = 0.0f;
     }
 
     if (Input_IsPressed('1')) {
-        md_set_state(&g_md, MD_Calm, true, 300.0f);
+        md_set_state(&engineData->g_md, MD_Calm, true, 300.0f);
     }
 
     if (Input_IsPressed('2')) {
-        md_set_state(&g_md, MD_Tense, true, 300.0f);
+        md_set_state(&engineData->g_md, MD_Tense, true, 300.0f);
     }
 
     if (Input_IsPressed('3')) {
-        md_set_state(&g_md, MD_Combat, true, 350.0f);
+        md_set_state(&engineData->g_md, MD_Combat, true, 350.0f);
     }
 
     if (Input_IsPressed('4')) {
-        md_set_state(&g_md, MD_Overdrive, true, 400.0f);
+        md_set_state(&engineData->g_md, MD_Overdrive, true, 400.0f);
     }
 
     if (Input_IsPressed(VK_OEM_MINUS)) {
-        g_rage = (g_rage - step < 0.0f) ? 0.0f : (g_rage - step);
+        engineData->g_rage = (engineData->g_rage - step < 0.0f) ? 0.0f : (engineData->g_rage - step);
     }
 
     if (Input_IsPressed(VK_SUBTRACT)) {
-        g_rage = (g_rage - step < 0.0f) ? 0.0f : (g_rage - step);
+        engineData->g_rage = (engineData->g_rage - step < 0.0f) ? 0.0f : (engineData->g_rage - step);
     }
 
     if (Input_IsPressed(VK_OEM_PLUS)) {
-        g_rage = (g_rage + step > 1.0f) ? 1.0f : (g_rage + step);
+        engineData->g_rage = (engineData->g_rage + step > 1.0f) ? 1.0f : (engineData->g_rage + step);
     }
 
     if (Input_IsPressed(VK_ADD)) {
-        g_rage = (g_rage + step > 1.0f) ? 1.0f : (g_rage + step);
+        engineData->g_rage = (engineData->g_rage + step > 1.0f) ? 1.0f : (engineData->g_rage + step);
     }
 
     if (Input_IsPressed('Q')) {
@@ -483,25 +468,28 @@ LRESULT CALLBACK WndProcHook(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_SIZE: {
         g_win.width = int(LOWORD(l));
         g_win.height = int(HIWORD(l));
-        if (g_gl.rc) SetViewportSize(g_win.width, g_win.height);
+        if (g_gl.rc) {
+            SetViewportSize(g_win.width, g_win.height);
+        }
         return 0;
     }
 
     case WM_KEYDOWN:
     case WM_KEYUP: {
         Input_HandleKeyMsg(m, w, l);
-        return 0; // we handled it
+        return 0;
     }
 
     case WM_SYSKEYDOWN:
     case WM_SYSKEYUP: {
-        // Handle your input, but still allow system behaviors (Alt+F4, Alt+Space, etc.)
         Input_HandleKeyMsg(m, w, l);
         return DefWindowProc(h, m, w, l);
     }
 
     case WM_ACTIVATEAPP: {
-        if (w == FALSE) Input_ClearAll();
+        if (w == FALSE) {
+            Input_ClearAll();
+        }
         return 0;
     }
 
@@ -517,7 +505,6 @@ LRESULT CALLBACK WndProcHook(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     }
 
-    // Anything we didn't explicitly handle:
     return DefWindowProc(h, m, w, l);
 }
 
@@ -577,17 +564,19 @@ extern "C" int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     }
 
     SetSwapInterval(1);
-    g_vsyncOn = true;
 
+    InitData();
     if (!InitAudio()) { 
         MessageBoxA(nullptr, "Audio init failed.", "Error", MB_ICONERROR); 
         return 2; 
     }
 
+    
     InitGraphics(g_win.width, g_win.height);
+    
     Input_Init();
     UpdateWindowTitle();
-
+    
     TimerStart(g_tim);
     float lastT = NowSecs(g_tim);
     bool running = true;
@@ -599,47 +588,56 @@ extern "C" int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         float now = NowSecs(g_tim);
         float dt = now - lastT; lastT = now;
 
-        if (g_audioReady) {
-            md_set_rage(&g_md, g_rage, true, 180.0f);
-            md_update(&g_md, dt);
+        if (engineData->g_audioReady) {
+            md_set_rage(&engineData->g_md, engineData->g_rage, true, 180.0f);
+            md_update(&engineData->g_md, dt);
         }
 
         RenderFrame(now, g_win.width, g_win.height);
         SwapBuffers(g_win.hdc);
-        if (!g_vsyncOn) {
+        if (!engineData->g_vsyncOn) {
             using namespace std::chrono;
             static auto last = high_resolution_clock::now();
             const auto target = milliseconds(16); 
             auto now = high_resolution_clock::now();
             auto elapsed = now - last;
-            if (elapsed < target) std::this_thread::sleep_for(target - elapsed);
+            if (elapsed < target) {
+                std::this_thread::sleep_for(target - elapsed);
+            }
             last = now;
         }
     }
 
-    if (gProgramMesh) { 
-        glDeleteProgram(gProgramMesh);      
+    if (renderState->gProgramMesh) {
+        DestroyProgram(renderState->gProgramMesh);
     }
-    if (gProgramPost) { 
-        glDeleteProgram(gProgramPost);       
+
+    if (renderState->gProgramPost) {
+        DestroyProgram(renderState->gProgramPost);
     }
-    if (gVAO_Mesh) { 
-        glDeleteVertexArrays(1, &gVAO_Mesh); 
+
+    if (renderState->gVAO_Mesh) {
+        glDeleteVertexArrays(1, &renderState->gVAO_Mesh);
     }
-    if (gVBO_Mesh) { 
-        glDeleteBuffers(1, &gVBO_Mesh);      
+
+    if (renderState->gVBO_Mesh) {
+        glDeleteBuffers(1, &renderState->gVBO_Mesh);
     }
-    if (gEBO_Mesh) { 
-        glDeleteBuffers(1, &gEBO_Mesh);      
+
+    if (renderState->gEBO_Mesh) {
+        glDeleteBuffers(1, &renderState->gEBO_Mesh);
     }
-    if (gVAO_Post) { 
-        glDeleteVertexArrays(1, &gVAO_Post); 
+
+    if (renderState->gVAO_Post) {
+        glDeleteVertexArrays(1, &renderState->gVAO_Post);
     }
-    if (gVBO_Post) { 
-        glDeleteBuffers(1, &gVBO_Post);     
+
+    if (renderState->gVBO_Post) {
+        glDeleteBuffers(1, &renderState->gVBO_Post);
     }
+
     if (gTex_Albedo) { 
-        glDeleteTextures(1, &gTex_Albedo);   
+        DestroyTexture(gTex_Albedo);   
     }
 
     DestroyUBOs();

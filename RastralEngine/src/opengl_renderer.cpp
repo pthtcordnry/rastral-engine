@@ -3,47 +3,41 @@
 #include <GL/glew.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#include "renderer.h"
 
-int g_view_w = 1280;
-int g_view_h = 720;
+void SetViewportSize(int width, int height) {
+    g_view_w = (width > 0) ? width : 1;
+    g_view_h = (height > 0) ? height : 1;
+    glViewport(0, 0, g_view_w, g_view_h);
+}
 
-struct RenderTarget {
-    GLuint fbo;
-    GLuint color;
-    GLuint depth;
-    int    w;
-    int    h;
-};
+void CreateFullscreenQuad(GLuint* vao, GLuint* vbo) {
+    const float fsq[] = {
+        -1.f,-1.f, 0.f,0.f,   1.f,-1.f, 1.f,0.f,   1.f, 1.f, 1.f,1.f,
+        -1.f,-1.f, 0.f,0.f,   1.f, 1.f, 1.f,1.f,  -1.f, 1.f, 0.f,1.f
+    };
+    glGenVertexArrays(1, vao);
+    glBindVertexArray(*vao);
 
-void DestroyRenderTarget(RenderTarget& rt) {
-    if (rt.depth) { 
-        glDeleteRenderbuffers(1, &rt.depth); 
-        rt.depth = 0; 
-    }
+    glGenBuffers(1, vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, *vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(fsq), fsq, GL_STATIC_DRAW);
 
-    if (rt.color) { 
-        glDeleteTextures(1, &rt.color);
-        rt.color = 0; 
-    }
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
 
-    if (rt.fbo) { 
-        glDeleteFramebuffers(1, &rt.fbo); 
-        rt.fbo = 0; 
-    }
-
-    rt.w = 0;
-    rt.h = 0;
+    glBindVertexArray(0);
 }
 
 bool CreateRenderTarget(RenderTarget& rt, int w, int h) {
-    DestroyRenderTarget(rt);
     rt.w = (w > 0) ? w : 1;
     rt.h = (h > 0) ? h : 1;
 
     glGenFramebuffers(1, &rt.fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, rt.fbo);
 
-    // Color
     glGenTextures(1, &rt.color);
     glBindTexture(GL_TEXTURE_2D, rt.color);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, rt.w, rt.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -51,7 +45,6 @@ bool CreateRenderTarget(RenderTarget& rt, int w, int h) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt.color, 0);
 
-    // Depth
     glGenRenderbuffers(1, &rt.depth);
     glBindRenderbuffer(GL_RENDERBUFFER, rt.depth);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, rt.w, rt.h);
@@ -74,11 +67,26 @@ void EndRenderTarget() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void SetViewportSize(int width, int height) {
-    g_view_w = (width > 0) ? width : 1;
-    g_view_h = (height > 0) ? height : 1;
-    glViewport(0, 0, g_view_w, g_view_h);
+void DestroyRenderTarget(RenderTarget& rt) {
+    if (rt.depth) {
+        glDeleteRenderbuffers(1, &rt.depth);
+        rt.depth = 0;
+    }
+
+    if (rt.color) {
+        glDeleteTextures(1, &rt.color);
+        rt.color = 0;
+    }
+
+    if (rt.fbo) {
+        glDeleteFramebuffers(1, &rt.fbo);
+        rt.fbo = 0;
+    }
+
+    rt.w = 0;
+    rt.h = 0;
 }
+
 
 void BeginFrame(float r, float g, float b, float a) {
     glViewport(0, 0, g_view_w, g_view_h);
@@ -102,12 +110,110 @@ void BindVAO(GLuint vao) {
     glBindVertexArray(vao); 
 }
 
+void CreateUBOs() {
+    if (!g_uboPerFrame) {
+        glGenBuffers(1, &g_uboPerFrame);
+    }
+
+    if (!g_uboPerDraw) {
+        glGenBuffers(1, &g_uboPerDraw);
+    }
+
+    if (!g_uboViz) {
+        glGenBuffers(1, &g_uboViz);
+    }
+
+    glBindBuffer(GL_UNIFORM_BUFFER, g_uboPerFrame);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(PerFrameUBO), nullptr, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, g_uboPerFrame);
+
+    glBindBuffer(GL_UNIFORM_BUFFER, g_uboPerDraw);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(PerDrawUBO), nullptr, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 1, g_uboPerDraw);
+
+    glBindBuffer(GL_UNIFORM_BUFFER, g_uboViz);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(VizParamsUBO), nullptr, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 2, g_uboViz);
+
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
+void BindUBOsForMesh(GLuint program) {
+    GLuint idx;
+
+    idx = glGetUniformBlockIndex(program, "PerFrame");
+    if (idx != GL_INVALID_INDEX) {
+        glUniformBlockBinding(program, idx, 0);
+    }
+
+    idx = glGetUniformBlockIndex(program, "PerDraw");
+    if (idx != GL_INVALID_INDEX) {
+        glUniformBlockBinding(program, idx, 1);
+    }
+}
+
+void BindUBOsForVisualizer(GLuint program) {
+    GLuint idx = glGetUniformBlockIndex(program, "VizParams");
+    if (idx != GL_INVALID_INDEX) {
+        glUniformBlockBinding(program, idx, 2);
+    }
+}
+
+void UpdatePerFrameUBO(const float projView16[16]) {
+    PerFrameUBO data;
+    memcpy(data.uProjView, projView16, 16 * sizeof(float));
+    glBindBuffer(GL_UNIFORM_BUFFER, g_uboPerFrame);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(PerFrameUBO), &data);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
+void UpdatePerDrawUBO(const float model16[16], const float tint4[4]) {
+    PerDrawUBO data;
+    memcpy(data.uModel, model16, 16 * sizeof(float));
+    memcpy(data.uTint, tint4, 4 * sizeof(float));
+    glBindBuffer(GL_UNIFORM_BUFFER, g_uboPerDraw);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(PerDrawUBO), &data);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
+void UpdateVizParamsUBO(float resX, float resY, float time, float beatPhase, float barPhase, int state,
+    float rage, float drums, float bass, float perc, float synth, float levelLead) {
+    VizParamsUBO v = {};
+    v.uRes[0] = resX;  v.uRes[1] = resY;
+    v.uTime = time;
+    v.uBeatPhase = beatPhase;
+    v.uBarPhase = barPhase;
+    v.uState = state;
+    v.uRage = rage;
+    v.uLevelsA[0] = drums; v.uLevelsA[1] = bass; v.uLevelsA[2] = perc; v.uLevelsA[3] = synth;
+    v.uLevelLead = levelLead;
+
+    glBindBuffer(GL_UNIFORM_BUFFER, g_uboViz);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(VizParamsUBO), &v);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
+void DestroyUBOs() {
+    if (g_uboPerFrame) {
+        glDeleteBuffers(1, &g_uboPerFrame);
+        g_uboPerFrame = 0;
+    }
+    if (g_uboPerDraw) {
+        glDeleteBuffers(1, &g_uboPerDraw);
+        g_uboPerDraw = 0;
+    }
+    if (g_uboViz) {
+        glDeleteBuffers(1, &g_uboViz);
+        g_uboViz = 0;
+    }
+}
+
 void DrawTriangles(GLint first, GLsizei count) { 
     glDrawArrays(GL_TRIANGLES, first, count); 
 }
 
-void DrawIndexedTriangles(GLsizei indexCount) {
-    glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_SHORT, (void*)0);
+void DrawIndexedTriangles(GLsizei indexCount, void* offset) {
+    glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, offset);
 }
 
 GLuint CompileShader(GLenum type, const char* source_utf8) {
@@ -154,9 +260,7 @@ GLuint LinkProgram(GLuint vs, GLuint fs) {
 }
 
 
-GLuint CreateTexture2D(int width, int height, GLenum internalFormat, GLenum srcFormat, GLenum srcType, const void* pixels,
-    GLint minFilter = GL_LINEAR, GLint magFilter = GL_LINEAR, GLint wrapS = GL_CLAMP_TO_EDGE, GLint wrapT = GL_CLAMP_TO_EDGE)
-{
+GLuint CreateTexture2D(int width, int height, GLenum internalFormat, GLenum srcFormat, GLenum srcType, const void* pixels, GLint minFilter = GL_LINEAR, GLint magFilter = GL_LINEAR, GLint wrapS = GL_CLAMP_TO_EDGE, GLint wrapT = GL_CLAMP_TO_EDGE) {
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -174,8 +278,12 @@ GLuint CreateTexture2D(int width, int height, GLenum internalFormat, GLenum srcF
     return tex;
 }
 
-void UpdateTexture2D(GLuint tex, int width, int height, GLenum srcFormat, GLenum srcType, const void* pixels)
-{
+void BindTexture2D(GLuint unit, GLuint tex) {
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(GL_TEXTURE_2D, tex);
+}
+
+void UpdateTexture2D(GLuint tex, int width, int height, GLenum srcFormat, GLenum srcType, const void* pixels) {
     glBindTexture(GL_TEXTURE_2D, tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, srcFormat, srcType, pixels);
@@ -189,18 +297,12 @@ void DestroyTexture(GLuint tex) {
     }
 }
 
-void BindTexture2D(GLuint unit, GLuint tex) {
-    glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(GL_TEXTURE_2D, tex);
-}
-
-GLuint LoadTextureRGBA8_FromFile(const char* path, bool flipY = true)
-{
+GLuint LoadTextureRGBA8_FromFile(const char* path, bool flipY = true) {
     if (flipY) { 
         stbi_set_flip_vertically_on_load(1); 
     }
     int w = 0, h = 0, n = 0;
-    unsigned char* rgba = stbi_load(path, &w, &h, &n, 4); // force RGBA
+    unsigned char* rgba = stbi_load(path, &w, &h, &n, 4);
     if (!rgba) { 
         fprintf(stderr, "stb_image: failed to load %s\n", path); return 0; 
     }
@@ -208,4 +310,50 @@ GLuint LoadTextureRGBA8_FromFile(const char* path, bool flipY = true)
     GLuint tex = CreateTexture2D(w, h, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, rgba, GL_LINEAR, GL_LINEAR, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
     stbi_image_free(rgba);
     return tex;
+}
+
+GLuint CreateProgramFromSources(const char* vsSrc, const char* fsSrc) {
+    if (!vsSrc || !fsSrc) {
+        return 0;
+    }
+    GLuint vs = CompileShader(GL_VERTEX_SHADER, vsSrc);
+    GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fsSrc);
+    GLuint prog = LinkProgram(vs, fs);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    return prog;
+}
+
+void InitMeshProgram(GLuint program) {
+    if (!program) { 
+        return; 
+    }
+
+    glUseProgram(program);
+    GLint loc = glGetUniformLocation(program, "uTex");
+    if (loc >= 0) { 
+        glUniform1i(loc, 0); 
+    }
+
+    BindUBOsForMesh(program);
+    glUseProgram(0);
+}
+
+void InitPostProgram(GLuint program) {
+    if (!program) {
+        return;
+    }
+
+    glUseProgram(program);
+    GLint loc = glGetUniformLocation(program, "uScene");
+    if (loc >= 0) {
+        glUniform1i(loc, 0);
+    }
+
+    BindUBOsForVisualizer(program);
+    glUseProgram(0);
+}
+
+void DestroyProgram(GLuint& program) {
+    if (program) { glDeleteProgram(program); program = 0; }
 }

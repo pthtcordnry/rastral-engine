@@ -34,7 +34,9 @@ void Input_UpdateAggregates(void) {
 }
 
 void Input_SetKey(int vk, int down) {
-    if (vk < 0 || vk > 255) return;
+    if (vk < 0 || vk > 255) {
+        return;
+    }
     g_keys.curr[vk] = (down ? 1 : 0);
 
     if (vk == VK_LSHIFT || vk == VK_RSHIFT ||
@@ -81,34 +83,42 @@ void Input_HandleKeyMsg(unsigned int msg, WPARAM wParam, LPARAM lParam) {
 void Input_HandleKeyWParam(UINT msg, WPARAM wParam) {
     switch (msg) {
     case WM_KEYDOWN:
-    case WM_SYSKEYDOWN:
+    case WM_SYSKEYDOWN: {
         Input_SetKey((int)wParam, 1);
-        break;
+    } break;
     case WM_KEYUP:
-    case WM_SYSKEYUP:
+    case WM_SYSKEYUP: {
         Input_SetKey((int)wParam, 0);
-        break;
+    } break;
     default:
         break;
     }
 }
 
 int Input_IsDown(int vk) {
-    if (vk < 0 || vk > 255) return 0;
+    if (vk < 0 || vk > 255) {
+        return 0;
+    }
     return g_keys.curr[vk] ? 1 : 0;
 }
 
 int Input_WasDown(int vk) {
-    if (vk < 0 || vk > 255) return 0;
+    if (vk < 0 || vk > 255) {
+        return 0;
+    }
     return g_keys.prev[vk] ? 1 : 0;
 }
 
 int Input_IsPressed(int vk) {
-    if (vk < 0 || vk > 255) return 0;
+    if (vk < 0 || vk > 255) {
+        return 0;
+    }
     return (g_keys.curr[vk] && !g_keys.prev[vk]) ? 1 : 0;
 }
 
 int Input_IsReleased(int vk) {
-    if (vk < 0 || vk > 255) return 0;
+    if (vk < 0 || vk > 255) {
+        return 0;
+    }
     return (!g_keys.curr[vk] && g_keys.prev[vk]) ? 1 : 0;
 }
