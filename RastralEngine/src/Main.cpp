@@ -188,27 +188,22 @@ void LoadShaders_FromFiles() {
         MessageBoxA(nullptr, "Missing shader source files.", "Shader Error", MB_ICONERROR);
         ExitProcess(1);
     }
-
     DestroyProgram(renderState->gProgramMesh);
     DestroyProgram(renderState->gProgramPost);
-
     renderState->gProgramMesh = CreateProgramFromSources(vsMesh.c_str(), fsMesh.c_str());
     renderState->gProgramPost = CreateProgramFromSources(vsPost.c_str(), fsPost.c_str());
     if (!renderState->gProgramMesh || !renderState->gProgramPost) {
         MessageBoxA(nullptr, "Shader compile/link failed.", "Shader Error", MB_ICONERROR);
         ExitProcess(1);
     }
-
     InitMeshProgram(renderState->gProgramMesh);
     InitPostProgram(renderState->gProgramPost);
 }
 
 void InitData() {
     arena_init(&engineMemArena, GAME_ARENA_SIZE);
-
     void* p1 = arena_alloc(&engineMemArena, sizeof(EngineData));
     void* p2 = arena_alloc(&engineMemArena, sizeof(RenderState));
-
     engineData = new (p1) EngineData();
     renderState = new (p2) RenderState();
 }
@@ -260,14 +255,13 @@ void ShutdownAudio() {
     engineData->g_audioReady = false;
 }
 
+
 void InitGraphics(int width, int height) {
     SetViewportSize(width, height);
-
     LoadShaders_FromFiles();
 
-    if (!CreateMeshFromGLTF_PosUV_Textured("models/bot.glb", renderState->gVAO_Mesh, renderState->gVBO_Mesh, renderState->gEBO_Mesh, gModelPreXform))
-    {
-        MessageBoxA(nullptr, "Failed to load models/mixamo_tpose.glb", "glTF Load Error", MB_ICONERROR);
+    if (!CreateMeshFromGLTF_PosUV_Textured("models/bot.glb", renderState->gVAO_Mesh, renderState->gVBO_Mesh, renderState->gEBO_Mesh, gModelPreXform)) {
+        MessageBoxA(nullptr, "Failed to load models/bot.glb", "glTF Load Error", MB_ICONERROR);
     }
 
     CreateFullscreenQuad(&renderState->gVAO_Post, &renderState->gVBO_Post);
@@ -275,7 +269,7 @@ void InitGraphics(int width, int height) {
     CreateUBOs();
 
     if (!gTex_Albedo) {
-        unsigned char white[4] = { 255, 255, 255, 255 };
+        unsigned char white[4] = { 255,255,255,255 };
         gTex_Albedo = CreateTexture2D(1, 1, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, white, GL_LINEAR, GL_LINEAR, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
     }
 
@@ -295,42 +289,49 @@ void RenderFrame(float tSeconds, int viewW, int viewH) {
     SetViewportSize(viewW, viewH);
 
     BeginRenderTarget(renderState->gRT_Scene);
-     BeginFrame(0.05f, 0.06f, 0.08f, 1.0f);
+    BeginFrame(0.05f, 0.06f, 0.08f, 1.0f);
 
-     float aspect = (float)g_view_w / (float)g_view_h;
-     Mat4 P = matPerspective(60.0f * 3.1415926f / 180.0f, aspect, 0.1f, 100.0f);
+    float aspect = (float)g_view_w / (float)g_view_h;
+    Mat4 P = matPerspective(60.0f * 3.1415926f / 180.0f, aspect, 0.05f, 1000.0f);
 
-     const float cp = std::cos(renderState->gPitch), sp = std::sin(renderState->gPitch);
-     const float cy = std::cos(renderState->gYaw), sy = std::sin(renderState->gYaw);
+    const float cp = std::cos(renderState->gPitch), sp = std::sin(renderState->gPitch);
+    const float cy = std::cos(renderState->gYaw), sy = std::sin(renderState->gYaw);
+    float eyeX = renderState->gCamDist * cp * sy;
+    float eyeY = renderState->gCamDist * sp;
+    float eyeZ = renderState->gCamDist * cp * cy;
 
-     float eyeX = renderState->gCamDist * cp * sy;
-     float eyeY = renderState->gCamDist * sp;
-     float eyeZ = renderState->gCamDist * cp * cy;
+    Mat4 V = matLookAt(eyeX, eyeY, eyeZ, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
+    Mat4 PV = matMul(P, V);
 
-     Mat4 V = matLookAt(eyeX, eyeY, eyeZ, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
-     Mat4 PV = matMul(P, V);
+    UpdatePerFrameUBO(PV.m);
 
-     Mat4 SU = matScale(renderState->gUserScale, renderState->gUserScale, renderState->gUserScale);
-     Mat4 M = matMul(SU, gModelPreXform);
+    BeginShader(renderState->gProgramMesh);
+    BindVAO(renderState->gVAO_Mesh);
 
-     UpdatePerFrameUBO(PV.m);
+    // Global scale/center from loader
+    Mat4 GlobalPre = gModelPreXform;
 
-     BeginShader(renderState->gProgramMesh);
-      BindVAO(renderState->gVAO_Mesh);
-      
-      for (const auto& d : gGLTFDraws) {
-          UpdatePerDrawUBO(M.m, d.baseColor);
-          BindTexture2D(0, d.texture ? d.texture : gTex_Albedo);
-      
-          DrawIndexedTriangles(d.indexCount, (void *)(d.indexOffset * sizeof(uint32_t)));
-      }
-      
-      BindVAO(0);
-      BindTexture2D(0, 0);
-     EndShader();
+    // Draw each glTF primitive
+    for (const auto& d : gGLTFDraws) {
+        // Mdraw = global pre-xform * per-draw localModel (WM for skinned, I for static)
+        Mat4 Mdraw = GlobalPre;
+        UpdatePerDrawUBO(Mdraw.m, d.baseColor);
+
+        // Bones (identity if non-skinned)
+        const float* bones = d.boneCount > 0 ? d.bones16.data() : nullptr;
+        UpdateSkinUBO(bones, d.boneCount);
+
+        BindTexture2D(0, d.texture ? d.texture : gTex_Albedo);
+        DrawIndexedTriangles(d.indexCount, (void*)(d.indexOffset * sizeof(uint32_t)));
+    }
+    BindVAO(0);
+    BindTexture2D(0, 0);
+    EndShader();
+
     EndRenderTarget();
 
-    float beatPhase = 0.0f, barPhase = 0.0f; md_music_clock(&engineData->g_md, &beatPhase, &barPhase);
+    // Visualizer (unchanged)
+    float beatPhase = 0.f, barPhase = 0.f; md_music_clock(&engineData->g_md, &beatPhase, &barPhase);
     float vDrums = md_get_stem_current_volume(&engineData->g_md, "drums");
     float vBass = md_get_stem_current_volume(&engineData->g_md, "bass");
     float vPerc = md_get_stem_current_volume(&engineData->g_md, "percussion");
@@ -339,14 +340,15 @@ void RenderFrame(float tSeconds, int viewW, int viewH) {
     int   stateI = (int)md_get_state(&engineData->g_md);
 
     BeginFrame(0, 0, 0, 1);
-     BeginShader(renderState->gProgramPost);
-      UpdateVizParamsUBO((float)g_view_w, (float)g_view_h, tSeconds, beatPhase, barPhase, stateI, engineData->g_rage, vDrums, vBass, vPerc, vSynth, vLead);
-      BindTexture2D(0, renderState->gRT_Scene.color);
-      BindVAO(renderState->gVAO_Post);
-      DrawTriangles(0, 6);
-      BindVAO(0);
-      BindTexture2D(0, 0);
-     EndShader();
+    BeginShader(renderState->gProgramPost);
+    UpdateVizParamsUBO((float)g_view_w, (float)g_view_h, tSeconds, beatPhase, barPhase, stateI, engineData->g_rage,
+        vDrums, vBass, vPerc, vSynth, vLead);
+    BindTexture2D(0, renderState->gRT_Scene.color);
+    BindVAO(renderState->gVAO_Post);
+    DrawTriangles(0, 6);
+    BindVAO(0);
+    BindTexture2D(0, 0);
+    EndShader();
     EndFrame();
 }
 
@@ -382,14 +384,14 @@ void HandleInput() {
         }
     }
 
-    if (Input_IsPressed('W')) { 
+    if (Input_IsDown('W')) { 
         renderState->gCamDist -= distStep; 
         if (renderState->gCamDist < 0.2f) {
             renderState->gCamDist = 0.2f;
         }
     }
 
-    if (Input_IsPressed('S')) { 
+    if (Input_IsDown('S')) { 
         renderState->gCamDist += distStep; 
     }
 

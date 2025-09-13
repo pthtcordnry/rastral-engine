@@ -5,6 +5,7 @@
 #include "stb_image.h"
 #include "renderer.h"
 
+// --------------- Viewport / RT ---------------
 void SetViewportSize(int width, int height) {
     g_view_w = (width > 0) ? width : 1;
     g_view_h = (height > 0) ? height : 1;
@@ -62,66 +63,34 @@ void BeginRenderTarget(const RenderTarget& rt) {
     glBindFramebuffer(GL_FRAMEBUFFER, rt.fbo);
     glViewport(0, 0, rt.w, rt.h);
 }
-
-void EndRenderTarget() {
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
+void EndRenderTarget() { glBindFramebuffer(GL_FRAMEBUFFER, 0); }
 
 void DestroyRenderTarget(RenderTarget& rt) {
-    if (rt.depth) {
-        glDeleteRenderbuffers(1, &rt.depth);
-        rt.depth = 0;
-    }
-
-    if (rt.color) {
-        glDeleteTextures(1, &rt.color);
-        rt.color = 0;
-    }
-
-    if (rt.fbo) {
-        glDeleteFramebuffers(1, &rt.fbo);
-        rt.fbo = 0;
-    }
-
-    rt.w = 0;
-    rt.h = 0;
+    if (rt.depth) { glDeleteRenderbuffers(1, &rt.depth); rt.depth = 0; }
+    if (rt.color) { glDeleteTextures(1, &rt.color); rt.color = 0; }
+    if (rt.fbo) { glDeleteFramebuffers(1, &rt.fbo); rt.fbo = 0; }
+    rt.w = 0; rt.h = 0;
 }
 
-
+// --------------- Frame ---------------
 void BeginFrame(float r, float g, float b, float a) {
     glViewport(0, 0, g_view_w, g_view_h);
     glClearColor(r, g, b, a);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
+void EndFrame() { glFlush(); }
 
-void EndFrame() {
-    glFlush();
-}
+// --------------- Shader / VAO ---------------
+void BeginShader(GLuint program) { glUseProgram(program); }
+void EndShader() { glUseProgram(0); }
+void BindVAO(GLuint vao) { glBindVertexArray(vao); }
 
-void BeginShader(GLuint program) { 
-    glUseProgram(program); 
-}
-
-void EndShader() { 
-    glUseProgram(0); 
-}
-
-void BindVAO(GLuint vao) { 
-    glBindVertexArray(vao); 
-}
-
+// --------------- UBOs ---------------
 void CreateUBOs() {
-    if (!g_uboPerFrame) {
-        glGenBuffers(1, &g_uboPerFrame);
-    }
-
-    if (!g_uboPerDraw) {
-        glGenBuffers(1, &g_uboPerDraw);
-    }
-
-    if (!g_uboViz) {
-        glGenBuffers(1, &g_uboViz);
-    }
+    if (!g_uboPerFrame) glGenBuffers(1, &g_uboPerFrame);
+    if (!g_uboPerDraw)  glGenBuffers(1, &g_uboPerDraw);
+    if (!g_uboViz)      glGenBuffers(1, &g_uboViz);
+    if (!g_uboSkin)     glGenBuffers(1, &g_uboSkin); // NEW
 
     glBindBuffer(GL_UNIFORM_BUFFER, g_uboPerFrame);
     glBufferData(GL_UNIFORM_BUFFER, sizeof(PerFrameUBO), nullptr, GL_DYNAMIC_DRAW);
@@ -135,6 +104,12 @@ void CreateUBOs() {
     glBufferData(GL_UNIFORM_BUFFER, sizeof(VizParamsUBO), nullptr, GL_DYNAMIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 2, g_uboViz);
 
+    // Allocate a generous palette (128 bones * 64 bytes each = 8 KB, plus a small tail)
+    const GLsizeiptr skinBytes = (GLsizeiptr)(sizeof(SkinUBO));
+    glBindBuffer(GL_UNIFORM_BUFFER, g_uboSkin);
+    glBufferData(GL_UNIFORM_BUFFER, skinBytes, nullptr, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 3, g_uboSkin); // binding = 3
+
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
@@ -142,21 +117,19 @@ void BindUBOsForMesh(GLuint program) {
     GLuint idx;
 
     idx = glGetUniformBlockIndex(program, "PerFrame");
-    if (idx != GL_INVALID_INDEX) {
-        glUniformBlockBinding(program, idx, 0);
-    }
+    if (idx != GL_INVALID_INDEX) glUniformBlockBinding(program, idx, 0);
 
     idx = glGetUniformBlockIndex(program, "PerDraw");
-    if (idx != GL_INVALID_INDEX) {
-        glUniformBlockBinding(program, idx, 1);
-    }
+    if (idx != GL_INVALID_INDEX) glUniformBlockBinding(program, idx, 1);
+
+    // NEW: Skin block is optional; bind if present
+    idx = glGetUniformBlockIndex(program, "Skin");
+    if (idx != GL_INVALID_INDEX) glUniformBlockBinding(program, idx, 3);
 }
 
 void BindUBOsForVisualizer(GLuint program) {
     GLuint idx = glGetUniformBlockIndex(program, "VizParams");
-    if (idx != GL_INVALID_INDEX) {
-        glUniformBlockBinding(program, idx, 2);
-    }
+    if (idx != GL_INVALID_INDEX) glUniformBlockBinding(program, idx, 2);
 }
 
 void UpdatePerFrameUBO(const float projView16[16]) {
@@ -173,6 +146,28 @@ void UpdatePerDrawUBO(const float model16[16], const float tint4[4]) {
     memcpy(data.uTint, tint4, 4 * sizeof(float));
     glBindBuffer(GL_UNIFORM_BUFFER, g_uboPerDraw);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(PerDrawUBO), &data);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+}
+
+// NEW: upload bone palette
+void UpdateSkinUBO(const float* boneMats16xN, int boneCount) {
+    struct Packed {
+        float uBones[128][16];
+        int   uBoneCount;
+        int   _pad[3];
+    } pack{};
+    const int N = (boneCount > 128) ? 128 : boneCount;
+    if (boneMats16xN && N > 0) {
+        memcpy(pack.uBones, boneMats16xN, N * 16 * sizeof(float));
+    }
+    else {
+        // Identity in slot 0 makes non-skinned/dummy-safe
+        for (int i = 0; i < 16; ++i) pack.uBones[0][i] = (i % 5 == 0) ? 1.f : 0.f;
+    }
+    pack.uBoneCount = N;
+
+    glBindBuffer(GL_UNIFORM_BUFFER, g_uboSkin);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(Packed), &pack);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
@@ -194,28 +189,19 @@ void UpdateVizParamsUBO(float resX, float resY, float time, float beatPhase, flo
 }
 
 void DestroyUBOs() {
-    if (g_uboPerFrame) {
-        glDeleteBuffers(1, &g_uboPerFrame);
-        g_uboPerFrame = 0;
-    }
-    if (g_uboPerDraw) {
-        glDeleteBuffers(1, &g_uboPerDraw);
-        g_uboPerDraw = 0;
-    }
-    if (g_uboViz) {
-        glDeleteBuffers(1, &g_uboViz);
-        g_uboViz = 0;
-    }
+    if (g_uboPerFrame) { glDeleteBuffers(1, &g_uboPerFrame); g_uboPerFrame = 0; }
+    if (g_uboPerDraw) { glDeleteBuffers(1, &g_uboPerDraw);  g_uboPerDraw = 0; }
+    if (g_uboViz) { glDeleteBuffers(1, &g_uboViz);      g_uboViz = 0; }
+    if (g_uboSkin) { glDeleteBuffers(1, &g_uboSkin);     g_uboSkin = 0; }
 }
 
-void DrawTriangles(GLint first, GLsizei count) { 
-    glDrawArrays(GL_TRIANGLES, first, count); 
-}
-
+// --------------- Draw ---------------
+void DrawTriangles(GLint first, GLsizei count) { glDrawArrays(GL_TRIANGLES, first, count); }
 void DrawIndexedTriangles(GLsizei indexCount, void* offset) {
     glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, offset);
 }
 
+// --------------- Shader helpers ---------------
 GLuint CompileShader(GLenum type, const char* source_utf8) {
     GLuint s = glCreateShader(type);
     glShaderSource(s, 1, &source_utf8, nullptr);
@@ -226,7 +212,6 @@ GLuint CompileShader(GLenum type, const char* source_utf8) {
         GLint len = 0; glGetShaderiv(s, GL_INFO_LOG_LENGTH, &len);
         std::vector<char> log(len > 1 ? len : 1);
         glGetShaderInfoLog(s, len, nullptr, log.data());
-
         std::fprintf(stderr, "[shader] compile error:\n%s\n", log.data());
         MessageBoxA(nullptr, log.data(), "Shader Compile Error", MB_ICONERROR);
         glDeleteShader(s);
@@ -236,21 +221,16 @@ GLuint CompileShader(GLenum type, const char* source_utf8) {
 }
 
 GLuint LinkProgram(GLuint vs, GLuint fs) {
-    if (!vs || !fs) {
-        return 0;
-    }
-
+    if (!vs || !fs) return 0;
     GLuint p = glCreateProgram();
     glAttachShader(p, vs);
     glAttachShader(p, fs);
-
     glLinkProgram(p);
     GLint ok = 0; glGetProgramiv(p, GL_LINK_STATUS, &ok);
     if (!ok) {
         GLint len = 0; glGetProgramiv(p, GL_INFO_LOG_LENGTH, &len);
         std::vector<char> log(len > 1 ? len : 1);
         glGetProgramInfoLog(p, len, nullptr, log.data());
-
         std::fprintf(stderr, "[link] error:\n%s\n", log.data());
         MessageBoxA(nullptr, log.data(), "Shader Link Error", MB_ICONERROR);
         glDeleteProgram(p);
@@ -259,20 +239,18 @@ GLuint LinkProgram(GLuint vs, GLuint fs) {
     return p;
 }
 
-
-GLuint CreateTexture2D(int width, int height, GLenum internalFormat, GLenum srcFormat, GLenum srcType, const void* pixels, GLint minFilter = GL_LINEAR, GLint magFilter = GL_LINEAR, GLint wrapS = GL_CLAMP_TO_EDGE, GLint wrapT = GL_CLAMP_TO_EDGE) {
+GLuint CreateTexture2D(int width, int height, GLenum internalFormat, GLenum srcFormat, GLenum srcType, const void* pixels,
+    GLint minFilter = GL_LINEAR, GLint magFilter = GL_LINEAR,
+    GLint wrapS = GL_CLAMP_TO_EDGE, GLint wrapT = GL_CLAMP_TO_EDGE) {
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
-
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, srcFormat, srcType, pixels);
-
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT);
-
     glBindTexture(GL_TEXTURE_2D, 0);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     return tex;
@@ -291,31 +269,20 @@ void UpdateTexture2D(GLuint tex, int width, int height, GLenum srcFormat, GLenum
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 }
 
-void DestroyTexture(GLuint tex) {
-    if (tex) {
-        glDeleteTextures(1, &tex);
-    }
-}
+void DestroyTexture(GLuint tex) { if (tex) glDeleteTextures(1, &tex); }
 
 GLuint LoadTextureRGBA8_FromFile(const char* path, bool flipY = true) {
-    if (flipY) { 
-        stbi_set_flip_vertically_on_load(1); 
-    }
+    if (flipY) stbi_set_flip_vertically_on_load(1);
     int w = 0, h = 0, n = 0;
     unsigned char* rgba = stbi_load(path, &w, &h, &n, 4);
-    if (!rgba) { 
-        fprintf(stderr, "stb_image: failed to load %s\n", path); return 0; 
-    }
-
+    if (!rgba) { fprintf(stderr, "stb_image: failed to load %s\n", path); return 0; }
     GLuint tex = CreateTexture2D(w, h, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, rgba, GL_LINEAR, GL_LINEAR, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
     stbi_image_free(rgba);
     return tex;
 }
 
 GLuint CreateProgramFromSources(const char* vsSrc, const char* fsSrc) {
-    if (!vsSrc || !fsSrc) {
-        return 0;
-    }
+    if (!vsSrc || !fsSrc) return 0;
     GLuint vs = CompileShader(GL_VERTEX_SHADER, vsSrc);
     GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fsSrc);
     GLuint prog = LinkProgram(vs, fs);
@@ -325,31 +292,19 @@ GLuint CreateProgramFromSources(const char* vsSrc, const char* fsSrc) {
 }
 
 void InitMeshProgram(GLuint program) {
-    if (!program) { 
-        return; 
-    }
-
+    if (!program) return;
     glUseProgram(program);
     GLint loc = glGetUniformLocation(program, "uTex");
-    if (loc >= 0) { 
-        glUniform1i(loc, 0); 
-    }
-
+    if (loc >= 0) glUniform1i(loc, 0);
     BindUBOsForMesh(program);
     glUseProgram(0);
 }
 
 void InitPostProgram(GLuint program) {
-    if (!program) {
-        return;
-    }
-
+    if (!program) return;
     glUseProgram(program);
     GLint loc = glGetUniformLocation(program, "uScene");
-    if (loc >= 0) {
-        glUniform1i(loc, 0);
-    }
-
+    if (loc >= 0) glUniform1i(loc, 0);
     BindUBOsForVisualizer(program);
     glUseProgram(0);
 }

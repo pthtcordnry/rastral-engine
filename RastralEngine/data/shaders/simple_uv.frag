@@ -2,12 +2,11 @@
 
 in vec2 vUV;
 in vec4 vTint;
+out vec4 FragColor;
 
 uniform sampler2D uTex;
 
-out vec4 FragColor;
-
 void main() {
-    vec4 tex = texture(uTex, vUV);
-    FragColor = tex * vTint;
+    vec4 albedo = texture(uTex, vUV);
+    FragColor = albedo * vTint;
 }
