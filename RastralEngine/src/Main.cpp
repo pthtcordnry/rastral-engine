@@ -20,22 +20,22 @@
 #include "engine_data.cpp"
 #include "memory_arena.cpp"
 
-struct Win32Window { 
-    HINSTANCE hinst; 
-    HWND hwnd; 
-    HDC hdc; 
-    int width; 
-    int height; 
-    bool running; 
+struct Win32Window {
+    HINSTANCE hinst;
+    HWND hwnd;
+    HDC hdc;
+    int width;
+    int height;
+    bool running;
 };
 
-struct GLContext { 
-    HGLRC rc; 
-    bool core; 
+struct GLContext {
+    HGLRC rc;
+    bool core;
 };
 
 struct HiResTimer {
-    LARGE_INTEGER f; 
+    LARGE_INTEGER f;
     LARGE_INTEGER t0;
 };
 
@@ -44,7 +44,7 @@ GLContext   g_gl = {};
 HiResTimer  g_tim = {};
 
 EngineData* engineData;
-RenderState* renderState; 
+RenderState* renderState;
 
 std::string gMeshShaderBase = "shaders/simple_uv";
 std::string gPostShaderBase = "shaders/visualizer";
@@ -53,19 +53,29 @@ GLuint gTex_Albedo = 0;
 GLenum gMeshIndexType = GL_UNSIGNED_INT;
 Mat4 gModelPreXform = matIdentity();
 
-float NowSecs(const HiResTimer& t) { 
-    LARGE_INTEGER n; 
-    QueryPerformanceCounter(&n); 
-    return float(double(n.QuadPart - t.t0.QuadPart) / double(t.f.QuadPart)); 
+// ---------- Animation externs from gltf_loader.cpp ----------
+namespace tinygltf { class Model; }
+extern const tinygltf::Model& GLTF_GetModel();
+extern void GLTF_UpdateAnimation_Pose(const tinygltf::Model& model, float tSec);
+struct GLTFDraw; // already defined in gltf_loader.cpp
+extern std::vector<GLTFDraw> gGLTFDraws;
+extern void GLTF_GetBonesForDraw(const GLTFDraw& d, std::vector<float>& out16);
+extern float gModelFitRadius; // from loader
+extern bool  gPlaceOnGround;  // from loader
+
+float NowSecs(const HiResTimer& t) {
+    LARGE_INTEGER n;
+    QueryPerformanceCounter(&n);
+    return float(double(n.QuadPart - t.t0.QuadPart) / double(t.f.QuadPart));
 }
 
-void TimerStart(HiResTimer& t) { 
-    QueryPerformanceFrequency(&t.f); 
-    QueryPerformanceCounter(&t.t0); 
+void TimerStart(HiResTimer& t) {
+    QueryPerformanceFrequency(&t.f);
+    QueryPerformanceCounter(&t.t0);
 }
 
 void Win32Fail(const char* where) {
-    DWORD error = GetLastError(); 
+    DWORD error = GetLastError();
     char msg[1024]{};
     FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, error, 0, msg, sizeof(msg), nullptr);
     MessageBoxA(nullptr, msg, where, MB_ICONERROR);
@@ -73,78 +83,79 @@ void Win32Fail(const char* where) {
 
 bool Win32SetBasicPixelFormat(HDC hdc) {
     PIXELFORMATDESCRIPTOR pfd{};
-    pfd.nSize = sizeof(pfd); 
+    pfd.nSize = sizeof(pfd);
     pfd.nVersion = 1;
     pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-    pfd.iPixelType = PFD_TYPE_RGBA; 
-    pfd.cColorBits = 24; 
-    pfd.cDepthBits = 24; 
-    pfd.cStencilBits = 8; 
+    pfd.iPixelType = PFD_TYPE_RGBA;
+    pfd.cColorBits = 24;
+    pfd.cDepthBits = 24;
+    pfd.cStencilBits = 8;
     pfd.iLayerType = PFD_MAIN_PLANE;
-    int fmt = ChoosePixelFormat(hdc, &pfd); 
-    
-    if (!fmt) { 
-        Win32Fail("ChoosePixelFormat"); 
+    int fmt = ChoosePixelFormat(hdc, &pfd);
+
+    if (!fmt) {
+        Win32Fail("ChoosePixelFormat");
         return false;
     }
 
-    if (!SetPixelFormat(hdc, fmt, &pfd)) { 
-        Win32Fail("SetPixelFormat"); 
-        return false; 
+    if (!SetPixelFormat(hdc, fmt, &pfd)) {
+        Win32Fail("SetPixelFormat");
+        return false;
     }
 
     return true;
 }
 
 bool GLCreateContextPreferCore(HDC hdc, GLContext& c) {
-    HGLRC temp = wglCreateContext(hdc); 
-    if (!temp) { 
-        Win32Fail("wglCreateContext(temp)"); 
-        return false; 
+    HGLRC temp = wglCreateContext(hdc);
+    if (!temp) {
+        Win32Fail("wglCreateContext(temp)");
+        return false;
     }
-    if (!wglMakeCurrent(hdc, temp)) { 
-        Win32Fail("wglMakeCurrent(temp)"); 
-        return false; 
+    if (!wglMakeCurrent(hdc, temp)) {
+        Win32Fail("wglMakeCurrent(temp)");
+        return false;
     }
-    glewExperimental = GL_TRUE; 
+    glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) {
-        c.rc = temp; 
-        c.core = false; 
-        return true; 
+        c.rc = temp;
+        c.core = false;
+        return true;
     }
     if (wglCreateContextAttribsARB) {
         const int attribs[] = { WGL_CONTEXT_MAJOR_VERSION_ARB,3, WGL_CONTEXT_MINOR_VERSION_ARB,3,
                                 WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0 };
         HGLRC core = wglCreateContextAttribsARB(hdc, 0, attribs);
         if (core) {
-            wglMakeCurrent(nullptr, nullptr); 
+            wglMakeCurrent(nullptr, nullptr);
             wglDeleteContext(temp);
-            if (!wglMakeCurrent(hdc, core)) { 
-                wglDeleteContext(core); 
-                c.rc = wglCreateContext(hdc); 
-                wglMakeCurrent(hdc, c.rc); 
-                c.core = false; 
-            } else { 
-                glewExperimental = GL_TRUE; 
-                if (glewInit() != GLEW_OK) { 
-                    Win32Fail("glewInit(core)"); 
-                    return false; 
-                } 
-                c.rc = core; 
-                c.core = true; 
+            if (!wglMakeCurrent(hdc, core)) {
+                wglDeleteContext(core);
+                c.rc = wglCreateContext(hdc);
+                wglMakeCurrent(hdc, c.rc);
+                c.core = false;
+            }
+            else {
+                glewExperimental = GL_TRUE;
+                if (glewInit() != GLEW_OK) {
+                    Win32Fail("glewInit(core)");
+                    return false;
+                }
+                c.rc = core;
+                c.core = true;
             }
             return true;
         }
     }
 
     c.rc = temp;
-    c.core = false; 
+    c.core = false;
     return true;
 }
 
 bool PumpMessages(Win32Window& w) {
-    MSG msg{}; 
-    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) { 
+    MSG msg{};
+    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) {
             w.running = false;
         }
@@ -155,15 +166,15 @@ bool PumpMessages(Win32Window& w) {
     return w.running;
 }
 
-void SetSwapInterval(int interval) { 
+void SetSwapInterval(int interval) {
     if (wglSwapIntervalEXT) {
         wglSwapIntervalEXT(interval);
     }
 }
 
 void UpdateWindowTitle() {
-    if (!g_win.hwnd) { 
-        return; 
+    if (!g_win.hwnd) {
+        return;
     }
 
     char title[256];
@@ -260,8 +271,9 @@ void InitGraphics(int width, int height) {
     SetViewportSize(width, height);
     LoadShaders_FromFiles();
 
-    if (!CreateMeshFromGLTF_PosUV_Textured("models/bot.glb", renderState->gVAO_Mesh, renderState->gVBO_Mesh, renderState->gEBO_Mesh, gModelPreXform)) {
-        MessageBoxA(nullptr, "Failed to load models/bot.glb", "glTF Load Error", MB_ICONERROR);
+    // NOTE: keeps your existing loader signature exactly as-is.
+    if (!CreateMeshFromGLTF_PosUV_Textured("models/idle-bot.glb", renderState->gVAO_Mesh, renderState->gVBO_Mesh, renderState->gEBO_Mesh, gModelPreXform)) {
+        MessageBoxA(nullptr, "Failed to load models/idle-bot.glb", "glTF Load Error", MB_ICONERROR);
     }
 
     CreateFullscreenQuad(&renderState->gVAO_Post, &renderState->gVBO_Post);
@@ -296,41 +308,56 @@ void RenderFrame(float tSeconds, int viewW, int viewH) {
 
     const float cp = std::cos(renderState->gPitch), sp = std::sin(renderState->gPitch);
     const float cy = std::cos(renderState->gYaw), sy = std::sin(renderState->gYaw);
-    float eyeX = renderState->gCamDist * cp * sy;
-    float eyeY = renderState->gCamDist * sp;
-    float eyeZ = renderState->gCamDist * cp * cy;
 
-    Mat4 V = matLookAt(eyeX, eyeY, eyeZ, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
+    // orbit around the model target point
+    const float cx = gModelTarget[0];
+    const float cyT = gModelTarget[1];
+    const float cz = gModelTarget[2];
+
+    const float dist = renderState->gCamDist;
+    float eyeX = cx + dist * cp * sy;
+    float eyeY = cyT + dist * sp;
+    float eyeZ = cz + dist * cp * cy;
+
+    Mat4 V = matLookAt(eyeX, eyeY, eyeZ, cx, cyT, cz, 0.0f, 1.0f, 0.0f);
     Mat4 PV = matMul(P, V);
-
     UpdatePerFrameUBO(PV.m);
+
+    // Drive animation (idle) -> fills gGlobalsAnimated
+    GLTF_UpdateAnimation_Pose(GLTF_GetModel(), tSeconds);
 
     BeginShader(renderState->gProgramMesh);
     BindVAO(renderState->gVAO_Mesh);
 
-    // Global scale/center from loader
-    Mat4 GlobalPre = gModelPreXform;
+    const Mat4 GlobalPre = gModelPreXform;
+    std::vector<float> animBones;
 
-    // Draw each glTF primitive
     for (const auto& d : gGLTFDraws) {
-        // Mdraw = global pre-xform * per-draw localModel (WM for skinned, I for static)
-        Mat4 Mdraw = GlobalPre;
-        UpdatePerDrawUBO(Mdraw.m, d.baseColor);
+        // For skinned draws, glTF needs the mesh node’s world matrix too.
+        // uModel = GlobalPre * nodeWorld   (skinned)
+        // uModel = GlobalPre               (static; WM already baked into vertices)
+        Mat4 Mdraw = d.skinned ? matMul(GlobalPre, d.localModel) : GlobalPre;
 
-        // Bones (identity if non-skinned)
-        const float* bones = d.boneCount > 0 ? d.bones16.data() : nullptr;
+        const float* bones = nullptr;
+        if (d.boneCount > 0) {
+            GLTF_GetBonesForDraw(d, animBones);   // yields (jointWorld * inverseBind)
+            bones = animBones.data();
+        }
+
+        UpdatePerDrawUBO(Mdraw.m, d.baseColor);
         UpdateSkinUBO(bones, d.boneCount);
 
         BindTexture2D(0, d.texture ? d.texture : gTex_Albedo);
         DrawIndexedTriangles(d.indexCount, (void*)(d.indexOffset * sizeof(uint32_t)));
     }
+
     BindVAO(0);
     BindTexture2D(0, 0);
     EndShader();
 
     EndRenderTarget();
 
-    // Visualizer (unchanged)
+    // --- post pass (unchanged) ---
     float beatPhase = 0.f, barPhase = 0.f; md_music_clock(&engineData->g_md, &beatPhase, &barPhase);
     float vDrums = md_get_stem_current_volume(&engineData->g_md, "drums");
     float vBass = md_get_stem_current_volume(&engineData->g_md, "bass");
@@ -362,48 +389,48 @@ void HandleInput() {
     const float kPitchMin = -1.553343f;
     const float kPitchMax = +1.553343f;
 
-    if (Input_IsDown(VK_LEFT)) { 
-        renderState->gYaw -= yawStep; 
+    if (Input_IsDown(VK_LEFT)) {
+        renderState->gYaw -= yawStep;
     }
 
-    if (Input_IsDown(VK_RIGHT)) { 
-        renderState->gYaw += yawStep; 
+    if (Input_IsDown(VK_RIGHT)) {
+        renderState->gYaw += yawStep;
     }
 
-    if (Input_IsDown(VK_UP)) { 
-        renderState->gPitch += pitchStep; 
+    if (Input_IsDown(VK_UP)) {
+        renderState->gPitch += pitchStep;
         if (renderState->gPitch > kPitchMax) {
             renderState->gPitch = kPitchMax;
         }
     }
 
-    if (Input_IsDown(VK_DOWN)) { 
-        renderState->gPitch -= pitchStep; 
+    if (Input_IsDown(VK_DOWN)) {
+        renderState->gPitch -= pitchStep;
         if (renderState->gPitch < kPitchMin) {
             renderState->gPitch = kPitchMin;
         }
     }
 
-    if (Input_IsDown('W')) { 
-        renderState->gCamDist -= distStep; 
+    if (Input_IsDown('W')) {
+        renderState->gCamDist -= distStep;
         if (renderState->gCamDist < 0.2f) {
             renderState->gCamDist = 0.2f;
         }
     }
 
-    if (Input_IsDown('S')) { 
-        renderState->gCamDist += distStep; 
+    if (Input_IsDown('S')) {
+        renderState->gCamDist += distStep;
     }
 
-    if (Input_IsPressed('Z')) { 
-        renderState->gUserScale = (renderState->gUserScale / scaleStep); 
+    if (Input_IsPressed('Z')) {
+        renderState->gUserScale = (renderState->gUserScale / scaleStep);
         if (renderState->gUserScale < 0.0001f) {
             renderState->gUserScale = 0.0001f;
         }
     }
 
-    if (Input_IsPressed('X')) { 
-        renderState->gUserScale = (renderState->gUserScale * scaleStep); 
+    if (Input_IsPressed('X')) {
+        renderState->gUserScale = (renderState->gUserScale * scaleStep);
         if (renderState->gUserScale > 10000.0f) {
             renderState->gUserScale = 10000.0f;
         }
@@ -512,38 +539,38 @@ LRESULT CALLBACK WndProcHook(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 
 bool Win32CreateWindowSimple(Win32Window& w) {
-    WNDCLASSEXA wc{}; 
-    wc.cbSize = sizeof(wc); 
-    wc.style = CS_OWNDC; 
+    WNDCLASSEXA wc{};
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_OWNDC;
     wc.lpfnWndProc = WndProcHook;
-    wc.hInstance = w.hinst; 
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW); 
+    wc.hInstance = w.hinst;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.lpszClassName = "RastralEngine";
-    
-    if (!RegisterClassExA(&wc)) { 
-        DWORD err = GetLastError(); 
-        if (err != ERROR_CLASS_ALREADY_EXISTS) { 
-            Win32Fail("RegisterClassExA"); 
-            return false; 
-        } 
+
+    if (!RegisterClassExA(&wc)) {
+        DWORD err = GetLastError();
+        if (err != ERROR_CLASS_ALREADY_EXISTS) {
+            Win32Fail("RegisterClassExA");
+            return false;
+        }
     }
 
-    RECT r{ 0,0,w.width,w.height }; 
+    RECT r{ 0,0,w.width,w.height };
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
     w.hwnd = CreateWindowExA(0, wc.lpszClassName, "Rastral Engine", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, w.hinst, nullptr);
-    if (!w.hwnd) { 
-        Win32Fail("CreateWindowExA"); 
-        return false; 
+    if (!w.hwnd) {
+        Win32Fail("CreateWindowExA");
+        return false;
     }
 
-    w.hdc = GetDC(w.hwnd); 
-    if (!w.hdc) { 
-        Win32Fail("GetDC"); 
-        return false; 
+    w.hdc = GetDC(w.hwnd);
+    if (!w.hdc) {
+        Win32Fail("GetDC");
+        return false;
     }
 
-    ShowWindow(w.hwnd, SW_SHOW); 
-    UpdateWindow(w.hwnd); 
+    ShowWindow(w.hwnd, SW_SHOW);
+    UpdateWindow(w.hwnd);
     return true;
 }
 
@@ -568,17 +595,17 @@ extern "C" int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     SetSwapInterval(1);
 
     InitData();
-    if (!InitAudio()) { 
-        MessageBoxA(nullptr, "Audio init failed.", "Error", MB_ICONERROR); 
-        return 2; 
+    if (!InitAudio()) {
+        MessageBoxA(nullptr, "Audio init failed.", "Error", MB_ICONERROR);
+        return 2;
     }
 
-    
+
     InitGraphics(g_win.width, g_win.height);
-    
+
     Input_Init();
     UpdateWindowTitle();
-    
+
     TimerStart(g_tim);
     float lastT = NowSecs(g_tim);
     bool running = true;
@@ -600,7 +627,7 @@ extern "C" int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         if (!engineData->g_vsyncOn) {
             using namespace std::chrono;
             static auto last = high_resolution_clock::now();
-            const auto target = milliseconds(16); 
+            const auto target = milliseconds(16);
             auto now = high_resolution_clock::now();
             auto elapsed = now - last;
             if (elapsed < target) {
@@ -638,19 +665,19 @@ extern "C" int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         glDeleteBuffers(1, &renderState->gVBO_Post);
     }
 
-    if (gTex_Albedo) { 
-        DestroyTexture(gTex_Albedo);   
+    if (gTex_Albedo) {
+        DestroyTexture(gTex_Albedo);
     }
 
     DestroyUBOs();
 
     ShutdownAudio();
     wglMakeCurrent(nullptr, nullptr);
-    if (g_gl.rc) 
+    if (g_gl.rc)
         wglDeleteContext(g_gl.rc);
-    if (g_win.hdc) 
+    if (g_win.hdc)
         ReleaseDC(g_win.hwnd, g_win.hdc);
-    if (g_win.hwnd) 
+    if (g_win.hwnd)
         DestroyWindow(g_win.hwnd);
 
     UnregisterClassA("RastralEngine", g_win.hinst);
