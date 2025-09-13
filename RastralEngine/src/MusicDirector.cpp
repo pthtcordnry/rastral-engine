@@ -95,7 +95,7 @@ void md_tick_fades(MusicDirector* director, double dtSeconds) {
     }
 }
 
-void md_apply_state_profile(MusicDirector* director, MD_State s, bool alignToNextBar, float fadeMs) {
+uint64_t md_apply_state_profile(MusicDirector* director, MD_State s, bool alignToNextBar, float fadeMs) {
     float drums;
     float bass; 
     float percussion;
@@ -117,6 +117,8 @@ void md_apply_state_profile(MusicDirector* director, MD_State s, bool alignToNex
     md_schedule_vol(director, "drums", drums, delaySec, fadeMs);
     md_schedule_vol(director, "synth", synth, delaySec, fadeMs);
     md_schedule_vol(director, "lead", lead, delaySec, fadeMs);
+
+    return when;
 }
 
 void md_apply_rage_shaping(MusicDirector* director, float rageVal, bool alignToBeat, float fadeMs) {
@@ -248,13 +250,13 @@ void md_update(MusicDirector* director, double dtSeconds) {
     }
 }
 
-void md_set_state(MusicDirector* director, MD_State s, bool alignToNextBar, float fadeMs) {
+uint64_t md_set_state(MusicDirector* director, MD_State s, bool alignToNextBar, float fadeMs) {
     if (!director) {
-        return;
+        return 0;
     }
 
     director->state = s;
-    md_apply_state_profile(director, s, alignToNextBar, fadeMs);
+    return md_apply_state_profile(director, s, alignToNextBar, fadeMs);
 }
 
 void md_set_rage(MusicDirector* director, float r01, bool alignToNextBeat, float fadeMs) {
@@ -306,6 +308,11 @@ void md_set_stem_target_volume(MusicDirector* director, const std::string& name,
 float md_get_bpm(const MusicDirector* director)      { return director ? director->cfg.bpm : 0.f; }
 void  md_set_bpm(MusicDirector* director, float bpm) { if (director) director->cfg.bpm = bpm; }
 MD_State md_get_state(const MusicDirector* director) { return director ? director->state : MD_Calm; }
+
+double md_delay_sec_from_when(const MusicDirector* md, uint64_t whenF) {
+    uint64_t nowF = (uint64_t)ae_now_frames(md->eng);
+    return (whenF > nowF) ? md_frames_to_seconds(md, whenF - nowF) : 0.0;
+}
 
 float md_get_stem_current_volume(const MusicDirector* director, const std::string& name) {
     if (!director) {

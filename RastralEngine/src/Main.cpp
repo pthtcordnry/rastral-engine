@@ -52,6 +52,9 @@ std::string gPostShaderBase = "shaders/visualizer";
 GLuint gTex_Albedo = 0;
 GLenum gMeshIndexType = GL_UNSIGNED_INT;
 Mat4 gModelPreXform = matIdentity();
+static int sAnimIdle = -1;
+static int sAnimDance1 = -1;
+static int sAnimDance2 = -1;
 
 // ---------- Animation externs from gltf_loader.cpp ----------
 namespace tinygltf { class Model; }
@@ -266,6 +269,37 @@ void ShutdownAudio() {
     engineData->g_audioReady = false;
 }
 
+static void ChooseAnimationSlots(float nowSec) {
+    // Prefer names; fall back to first/next clips if not named as expected.
+    const int N = GLTF_GetAnimationCount();
+
+    int idle = GLTF_FindAnimationIndexContaining("idle");
+    if (idle < 0 && N > 0) idle = 0;
+
+    int d1 = GLTF_FindAnimationIndexContaining("dance");
+    int d2 = -1;
+    if (d1 >= 0 && N > 1) {
+        // find a second "dance" clip with a different index
+        for (int i = 0; i < N; ++i) {
+            if (i == d1) continue;
+            std::string nm = GLTF_GetAnimationName(i);
+            for (auto& c : nm) c = (char)tolower(c);
+            if (nm.find("dance") != std::string::npos) { d2 = i; break; }
+        }
+    }
+    // Fallbacks to ensure unique clips
+    if (d1 < 0 && N > 1) d1 = (idle == 0 ? 1 : 0);
+    if (d2 < 0 && N > 2) {
+        for (int i = 0; i < N; ++i) if (i != idle && i != d1) { d2 = i; break; }
+    }
+
+    sAnimIdle = idle;
+    sAnimDance1 = (d1 >= 0 ? d1 : idle);
+    sAnimDance2 = (d2 >= 0 ? d2 : sAnimDance1);
+
+    // Start on idle
+    GLTF_SetActiveAnimationByIndex(sAnimIdle, nowSec);
+}
 
 void InitGraphics(int width, int height) {
     SetViewportSize(width, height);
@@ -275,6 +309,9 @@ void InitGraphics(int width, int height) {
     if (!CreateMeshFromGLTF_PosUV_Textured("models/idle-bot.glb", renderState->gVAO_Mesh, renderState->gVBO_Mesh, renderState->gEBO_Mesh, gModelPreXform)) {
         MessageBoxA(nullptr, "Failed to load models/idle-bot.glb", "glTF Load Error", MB_ICONERROR);
     }
+
+    GLTF_AppendAnimationsFromFile("models/dance1.glb");
+    GLTF_AppendAnimationsFromFile("models/dance2.glb");
 
     CreateFullscreenQuad(&renderState->gVAO_Post, &renderState->gVBO_Post);
     CreateRenderTarget(renderState->gRT_Scene, g_view_w, g_view_h);
@@ -295,6 +332,7 @@ void InitGraphics(int width, int height) {
     float aspect = (float)g_view_w / (float)g_view_h;
     float vfov = DegToRad(60.0f);
     renderState->gCamDist = DistanceToFitSphere(gModelFitRadius, vfov, aspect);
+    ChooseAnimationSlots(0.0f);
 }
 
 void RenderFrame(float tSeconds, int viewW, int viewH) {
@@ -451,20 +489,29 @@ void HandleInput() {
         renderState->gPitch = 0.0f;
     }
 
+    float now = NowSecs(g_tim);
     if (Input_IsPressed('1')) {
-        md_set_state(&engineData->g_md, MD_Calm, true, 300.0f);
+        uint64_t when = md_set_state(&engineData->g_md, MD_Calm, true, 300.0f);
+        double delaySec = md_delay_sec_from_when(&engineData->g_md, when);
+        GLTF_CrossfadeToAnimationByIndex(sAnimIdle, now + (float)delaySec, 0.35f, true);
     }
 
     if (Input_IsPressed('2')) {
-        md_set_state(&engineData->g_md, MD_Tense, true, 300.0f);
+        uint64_t when = md_set_state(&engineData->g_md, MD_Tense, true, 300.0f);
+        double delaySec = md_delay_sec_from_when(&engineData->g_md, when);
+        GLTF_CrossfadeToAnimationByIndex(sAnimDance1, now + (float)delaySec, 0.35f, true);
     }
 
     if (Input_IsPressed('3')) {
-        md_set_state(&engineData->g_md, MD_Combat, true, 350.0f);
+        uint64_t when = md_set_state(&engineData->g_md, MD_Combat, true, 350.0f);
+        double delaySec = md_delay_sec_from_when(&engineData->g_md, when);
+        GLTF_CrossfadeToAnimationByIndex(sAnimDance2, now + (float)delaySec, 0.35f, true);
     }
 
     if (Input_IsPressed('4')) {
-        md_set_state(&engineData->g_md, MD_Overdrive, true, 400.0f);
+        uint64_t when = md_set_state(&engineData->g_md, MD_Overdrive, true, 400.0f);
+        double delaySec = md_delay_sec_from_when(&engineData->g_md, when);
+        GLTF_CrossfadeToAnimationByIndex(sAnimDance2, now + (float)delaySec, 0.35f, true);
     }
 
     if (Input_IsPressed(VK_OEM_MINUS)) {
@@ -609,6 +656,9 @@ extern "C" int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     TimerStart(g_tim);
     float lastT = NowSecs(g_tim);
     bool running = true;
+
+    int lastState = (int)md_get_state(&engineData->g_md);
+
     while (running) {
         Input_BeginFrame();
         running = PumpMessages(g_win);
